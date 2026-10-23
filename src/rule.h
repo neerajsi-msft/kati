@@ -51,6 +51,7 @@ class Rule {
   std::vector<Symbol> output_patterns;
   std::vector<Symbol> validations;
   bool is_double_colon;
+  bool is_grouped;
   bool is_suffix_rule;
   std::vector<Value*> cmds;
   Loc loc;

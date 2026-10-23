@@ -23,7 +23,11 @@
 #include "strutil.h"
 #include "symtab.h"
 
-Rule::Rule() : is_double_colon(false), is_suffix_rule(false), cmd_lineno(0) {}
+Rule::Rule()
+    : is_double_colon(false),
+      is_grouped(false),
+      is_suffix_rule(false),
+      cmd_lineno(0) {}
 
 void Rule::ParseInputs(const std::string_view& inputs_str) {
   bool is_order_only = false;
@@ -113,6 +117,8 @@ std::string Rule::DebugString() const {
   }
   if (is_double_colon)
     v.push_back("is_double_colon");
+  if (is_grouped)
+    v.push_back("is_grouped");
   if (is_suffix_rule)
     v.push_back("is_suffix_rule");
   if (!cmds.empty()) {

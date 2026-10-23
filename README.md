@@ -5,6 +5,26 @@
 kati is an experimental GNU make clone. The main goal of this tool is to
 speed-up incremental build of Android.
 
+### Explicit grouped targets (local extension)
+
+Explicit `first second &: inputs` rules are lowered to one action, using the
+same output ownership machinery as `.KATI_IMPLICIT_OUTPUTS`. Either member can
+be requested; missing or stale members rebuild the group. Additional ordinary
+prerequisites and target-specific variables on members are merged as for Kati
+implicit outputs. Ninja receives `build first | second: ...`.
+
+This is a bounded subset of GNU Make 4.3 grouped targets. Kati always evaluates
+automatic variables such as `$@` using the first listed output, regardless of
+which member was requested. Recipes must not depend on GNU Make's
+triggering-member choice. Pattern/static-pattern/suffix or phony groups, `&::`, grouped
+assignments, overlapping groups, and recipe replacement are rejected.
+Existing `.KATI_IMPLICIT_OUTPUTS` declarations remain supported.
+The built-in `KATI_GROUPED_TARGETS` variable is `explicit`, allowing callers to
+require this extension without relying on `MAKE_VERSION` (still 4.2.1).
+
+Run `go test -run TestGroupedTargets` after building `ckati` to check the direct
+executor, Ninja export, incremental repair, and unsupported-form diagnostics.
+
 Currently, kati does not offer a faster build by itself. It instead converts
 your Makefile to a ninja file.
 

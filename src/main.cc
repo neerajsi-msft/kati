@@ -64,6 +64,7 @@ static void ReadBootstrapMakefile(const std::vector<Symbol>& targets,
        // Pretend to be GNU make 4.2.1, for compatibility.
        "MAKE_VERSION?=4.2.1\n"
        "KATI?=ckati\n"
+       "KATI_GROUPED_TARGETS:=explicit\n"
        // Overwrite $SHELL environment variable.
        "SHELL=/bin/sh\n"
        // TODO: Add more builtin vars.

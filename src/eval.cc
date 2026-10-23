@@ -356,12 +356,18 @@ void Evaluator::EvalAssign(const AssignStmt* stmt) {
 static std::string_view ParseRuleTargets(const Loc& loc,
                                          const std::string_view& before_term,
                                          std::vector<Symbol>* targets,
-                                         bool* is_pattern_rule) {
+                                         bool* is_pattern_rule,
+                                         bool* is_grouped) {
   size_t pos = before_term.find(':');
   if (pos == std::string::npos) {
     ERROR_LOC(loc, "*** missing separator.");
   }
   std::string_view targets_string = before_term.substr(0, pos);
+  *is_grouped = !targets_string.empty() && targets_string.back() == '&' &&
+                (targets_string.size() == 1 ||
+                 targets_string[targets_string.size() - 2] != '\\');
+  if (*is_grouped)
+    targets_string.remove_suffix(1);
   size_t pattern_rule_count = 0;
   for (auto const& word : WordScanner(targets_string)) {
     std::string_view target = TrimLeadingCurdir(word);
@@ -476,11 +482,18 @@ void Evaluator::EvalRule(const RuleStmt* stmt) {
 
   std::vector<Symbol> targets;
   bool is_pattern_rule;
+  bool is_grouped;
   std::string_view after_targets =
-      ParseRuleTargets(loc_, before_term, &targets, &is_pattern_rule);
-  bool is_double_colon = (after_targets[0] == ':');
+      ParseRuleTargets(loc_, before_term, &targets, &is_pattern_rule,
+                       &is_grouped);
+  bool is_double_colon = !after_targets.empty() && after_targets[0] == ':';
   if (is_double_colon) {
     after_targets = after_targets.substr(1);
+  }
+  if (is_grouped && (targets.empty() || is_pattern_rule || is_double_colon)) {
+    Error(
+        "*** grouped targets support explicit &: rules only (not &:: or "
+        "patterns).");
   }
 
   // Figure out if this is a rule-specific variable assignment.
@@ -501,6 +514,8 @@ void Evaluator::EvalRule(const RuleStmt* stmt) {
   // If variable name is not empty, we have rule- or target-specific
   // variable assignment.
   if (separator == '=' && separator_pos) {
+    if (is_grouped)
+      Error("*** grouped target assignments are not supported.");
     EvalRuleSpecificAssign(targets, stmt, after_targets, separator_pos);
     return;
   }
@@ -514,12 +529,15 @@ void Evaluator::EvalRule(const RuleStmt* stmt) {
   Rule* rule = new Rule();
   rule->loc = loc_;
   rule->is_double_colon = is_double_colon;
+  rule->is_grouped = is_grouped;
   if (is_pattern_rule) {
     rule->output_patterns.swap(targets);
   } else {
     rule->outputs.swap(targets);
   }
   rule->ParsePrerequisites(after_targets, separator_pos, stmt);
+  if (is_grouped && !rule->output_patterns.empty())
+    Error("*** grouped static pattern rules are not supported.");
 
   if (stmt->sep == RuleStmt::SEP_SEMICOLON) {
     rule->cmds.push_back(stmt->rhs);

@@ -178,6 +178,12 @@ struct RuleMerger {
   }
 
   void AddRule(Symbol output, const Rule* r) {
+    if (primary_rule && !r->cmds.empty() &&
+        (primary_rule->is_grouped || r->is_grouped)) {
+      ERROR_LOC(r->loc,
+                "*** overriding grouped target recipe for `%s' is not supported.",
+                output.c_str());
+    }
     if (rules.empty()) {
       is_double_colon = r->is_double_colon;
     } else if (is_double_colon != r->is_double_colon) {
@@ -234,6 +240,7 @@ struct RuleMerger {
       FillDepNodeFromRule(output, primary_rule, n);
       FillDepNodeLoc(primary_rule, n);
       n->cmds = primary_rule->cmds;
+      n->is_grouped = primary_rule->is_grouped;
     } else if (pattern_rule) {
       FillDepNodeFromRule(output, pattern_rule, n);
       FillDepNodeLoc(pattern_rule, n);
@@ -300,6 +307,16 @@ class DepBuilder {
     LOG_STAT("%zu suffix rules", suffix_rules_.size());
 
     HandleSpecialTargets();
+    for (const Rule* rule : rules) {
+      if (!rule->is_grouped)
+        continue;
+      for (Symbol output : rule->outputs) {
+        if (phony_.exists(output))
+          ERROR_LOC(rule->loc, "*** phony grouped targets are not supported.");
+        if (IsSuffixRule(output))
+          ERROR_LOC(rule->loc, "*** grouped suffix rules are not supported.");
+      }
+    }
   }
 
   void HandleSpecialTargets() {
@@ -417,6 +434,24 @@ class DepBuilder {
     for (auto& p : suffix_rules_) {
       reverse(p.second.begin(), p.second.end());
     }
+    for (const Rule* rule : rules) {
+      if (!rule->is_grouped)
+        continue;
+      if (rule->cmds.empty())
+        ERROR_LOC(rule->loc, "*** grouped targets must provide a recipe.");
+      Symbol primary = rule->outputs.front();
+      SymbolSet members;
+      members.insert(primary);
+      for (size_t i = 1; i < rule->outputs.size(); ++i) {
+        Symbol output = rule->outputs[i];
+        if (members.exists(output))
+          ERROR_LOC(rule->loc, "*** duplicate grouped target `%s'.",
+                    output.c_str());
+        members.insert(output);
+        rules_[output].SetImplicitOutput(output, primary, &rules_[primary]);
+        rules_[primary].AddImplicitOutput(output, &rules_[output]);
+      }
+    }
     for (auto& p : rules_) {
       auto vars = LookupRuleVars(p.first);
       if (!vars) {
@@ -478,6 +513,8 @@ class DepBuilder {
       }
       rules_[output].AddRule(output, rule);
       PopulateSuffixRule(rule, output);
+      if (rule->is_grouped)
+        break;
     }
   }
 

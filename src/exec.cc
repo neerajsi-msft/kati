@@ -63,6 +63,13 @@ class Executor {
 
     done_[n.output] = kProcessing;
     double output_ts = GetTimestamp(n.output.c_str());
+    if (n.is_grouped) {
+      for (Symbol output : n.implicit_outputs) {
+        double timestamp = GetTimestamp(output.c_str());
+        if (timestamp < output_ts)
+          output_ts = timestamp;
+      }
+    }
 
     LOG("ExecNode: %s for %s", n.output.c_str(),
         needed_by ? needed_by : "(null)");
@@ -78,6 +85,10 @@ class Executor {
 
     double latest = kProcessing;
     for (auto const& d : n.order_onlys) {
+      if (d.second->is_grouped) {
+        ExecNode(*d.second, n.output.c_str());
+        continue;
+      }
       if (Exists(d.second->output.str())) {
         continue;
       }
@@ -88,6 +99,8 @@ class Executor {
 
     for (auto const& d : n.deps) {
       double ts = ExecNode(*d.second, n.output.c_str());
+      if (d.second->is_grouped && !g_flags.is_dry_run)
+        ts = GetTimestamp(d.first.c_str());
       if (latest < ts)
         latest = ts;
     }
@@ -122,6 +135,8 @@ class Executor {
       }
     }
 
+    if (n.is_grouped && !g_flags.is_dry_run)
+      output_ts = GetTimestamp(n.output.c_str());
     done_[n.output] = output_ts;
     return output_ts;
   }
