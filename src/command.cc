@@ -128,6 +128,10 @@ void AutoStarVar::Eval(Evaluator*, std::string* s) const {
 }
 
 void AutoQuestionVar::Eval(Evaluator* ev, std::string* s) const {
+  if (g_flags.buildxl_output)
+    ev->Error(
+        "BuildXL does not support timestamp-dependent automatic variable "
+        "$?");
   std::unordered_set<std::string_view> seen;
 
   if (ev->avoid_io()) {
@@ -203,6 +207,74 @@ void ParseCommandPrefixes(std::string_view* s, bool* echo, bool* ignore_error) {
 }
 
 }  // namespace
+
+std::string QuoteShellLiteral(std::string_view value) {
+  std::string result = "'";
+  for (char c : value)
+    result += c == '\'' ? "'\\''" : std::string(1, c);
+  return result + "'";
+}
+
+std::string_view TranslateShellCommand(const char* in,
+                                       std::string* cmd_buf,
+                                       bool ninja_encoding) {
+  const size_t orig_size = cmd_buf->size();
+  if (!ninja_encoding) {
+    *cmd_buf += in;
+    return std::string_view(cmd_buf->data() + orig_size,
+                            cmd_buf->size() - orig_size);
+  }
+  bool prev_backslash = false;
+  char prev_char = ' ';
+  char quote = 0;
+  for (; *in; in++) {
+    switch (*in) {
+      case '#':
+        if (quote == 0 && isspace(prev_char)) {
+          while (in[1] && *in != '\n')
+            in++;
+        } else {
+          *cmd_buf += *in;
+        }
+        break;
+      case '\'':
+      case '"':
+      case '`':
+        if (quote) {
+          if (quote == *in)
+            quote = 0;
+        } else if (!prev_backslash) {
+          quote = *in;
+        }
+        *cmd_buf += *in;
+        break;
+      case '$':
+        *cmd_buf += "$$";
+        break;
+      case '\n':
+        if (prev_backslash) {
+          cmd_buf->resize(cmd_buf->size() - 1);
+        } else {
+          *cmd_buf += ' ';
+        }
+        break;
+      default:
+        *cmd_buf += *in;
+    }
+    prev_backslash = *in == '\\' ? !prev_backslash : false;
+    prev_char = *in;
+  }
+  if (prev_backslash)
+    cmd_buf->resize(cmd_buf->size() - 1);
+  while (cmd_buf->size() > orig_size) {
+    char c = cmd_buf->back();
+    if (!isspace(c) && c != ';')
+      break;
+    cmd_buf->pop_back();
+  }
+  return std::string_view(cmd_buf->data() + orig_size,
+                          cmd_buf->size() - orig_size);
+}
 
 CommandEvaluator::CommandEvaluator(Evaluator* ev) : ev_(ev) {
 #define INSERT_AUTO_VAR(name, sym)                                      \

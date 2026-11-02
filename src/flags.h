@@ -33,6 +33,7 @@ struct Flags {
   bool enable_stat_logs;
   bool gen_all_targets;
   bool generate_ninja;
+  const char* buildxl_output;
   bool generate_empty_ninja;
   bool is_dry_run;
   bool is_silent_mode;

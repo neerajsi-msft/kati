@@ -222,80 +222,6 @@ class NinjaGenerator {
     }
   }
 
-  std::string_view TranslateCommand(const char* in, std::string* cmd_buf) {
-    const size_t orig_size = cmd_buf->size();
-    bool prev_backslash = false;
-    // Set space as an initial value so the leading comment will be
-    // stripped out.
-    char prev_char = ' ';
-    char quote = 0;
-    for (; *in; in++) {
-      switch (*in) {
-        case '#':
-          if (quote == 0 && isspace(prev_char)) {
-            while (in[1] && *in != '\n')
-              in++;
-          } else {
-            *cmd_buf += *in;
-          }
-          break;
-
-        case '\'':
-        case '"':
-        case '`':
-          if (quote) {
-            if (quote == *in)
-              quote = 0;
-          } else if (!prev_backslash) {
-            quote = *in;
-          }
-          *cmd_buf += *in;
-          break;
-
-        case '$':
-          *cmd_buf += "$$";
-          break;
-
-        case '\n':
-          if (prev_backslash) {
-            cmd_buf->resize(cmd_buf->size() - 1);
-          } else {
-            *cmd_buf += ' ';
-          }
-          break;
-
-        case '\\':
-          *cmd_buf += '\\';
-          break;
-
-        default:
-          *cmd_buf += *in;
-      }
-
-      if (*in == '\\') {
-        prev_backslash = !prev_backslash;
-      } else {
-        prev_backslash = false;
-      }
-
-      prev_char = *in;
-    }
-
-    if (prev_backslash) {
-      cmd_buf->resize(cmd_buf->size() - 1);
-    }
-
-    while (true) {
-      char c = (*cmd_buf)[cmd_buf->size() - 1];
-      if (!isspace(c) && c != ';')
-        break;
-      cmd_buf->resize(cmd_buf->size() - 1);
-    }
-
-    return std::string_view(cmd_buf->data() + orig_size,
-                            cmd_buf->size() - orig_size);
-  }
-
   bool IsOutputMkdir(const char* name, std::string_view cmd) {
     if (!HasPrefix(cmd, "mkdir -p ")) {
       return false;
@@ -384,7 +310,7 @@ class NinjaGenerator {
       if (needs_subshell)
         *cmd_buf += '(';
 
-      std::string_view translated = TranslateCommand(in, cmd_buf);
+      std::string_view translated = TranslateShellCommand(in, cmd_buf, true);
       if (g_flags.detect_android_echo && !got_descritpion && !c.echo &&
           GetDescriptionFromCommand(translated, description)) {
         got_descritpion = true;

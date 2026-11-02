@@ -22,6 +22,12 @@
 struct DepNode;
 class Evaluator;
 
+// Ninja's single-line encoding is deliberately separate from literal scripts.
+std::string_view TranslateShellCommand(const char* in,
+                                       std::string* out,
+                                       bool ninja_encoding);
+std::string QuoteShellLiteral(std::string_view value);
+
 struct Command {
   explicit Command(Symbol o)
       : output(o), echo(true), ignore_error(false), force_no_subshell(false) {}

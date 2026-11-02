@@ -8,6 +8,8 @@ speed-up incremental build of Android.
 Currently, kati does not offer a faster build by itself. It instead converts
 your Makefile to a ninja file.
 
+For experimental BuildXL export support, see [README.buildxl.md](README.buildxl.md).
+
 ## Development
 
 Building:

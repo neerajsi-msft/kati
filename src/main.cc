@@ -25,6 +25,7 @@
 #include <string_view>
 
 #include "affinity.h"
+#include "buildxl.h"
 #include "eval.h"
 #include "exec.h"
 #include "file.h"
@@ -82,7 +83,7 @@ static void ReadBootstrapMakefile(const std::vector<Symbol>& targets,
         // TODO: Add more builtin rules.
     );
   }
-  if (g_flags.generate_ninja) {
+  if (g_flags.generate_ninja || g_flags.buildxl_output) {
     bootstrap += StringPrintf("MAKE?=make -j%d\n",
                               g_flags.num_jobs <= 1 ? 1 : g_flags.num_jobs / 2);
   } else {
@@ -295,6 +296,13 @@ static int Run(const std::vector<Symbol>& targets,
 
   if (g_flags.is_syntax_check_only)
     return 0;
+
+  if (g_flags.buildxl_output) {
+    GenerateBuildXL(nodes, &ev, g_flags.buildxl_output);
+    ev.DumpStackStats();
+    ev.Finish();
+    return 0;
+  }
 
   if (g_flags.generate_ninja) {
     ScopedFrame frame(ev.Enter(FrameType::PHASE, "*ninja generation*", Loc()));

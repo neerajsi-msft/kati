@@ -23,6 +23,7 @@ KATI_BIN_PATH ?= .
 
 KATI_CXX_SRCS := \
 	affinity.cc \
+	buildxl.cc \
 	command.cc \
 	dep.cc \
 	eval.cc \

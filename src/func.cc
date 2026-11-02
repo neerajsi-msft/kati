@@ -30,6 +30,7 @@
 #include <sstream>
 #include <unordered_map>
 
+#include "command.h"
 #include "eval.h"
 #include "file_cache.h"
 #include "fileutil.h"
@@ -46,7 +47,7 @@
 namespace {
 
 // TODO: This code is very similar to
-// NinjaGenerator::TranslateCommand. Factor them out.
+// TranslateShellCommand. Factor them out.
 void StripShellComment(std::string* cmd) {
   if (cmd->find('#') == std::string::npos)
     return;
@@ -422,6 +423,8 @@ void AddprefixFunc(const std::vector<Value*>& args,
 void RealpathFunc(const std::vector<Value*>& args,
                   Evaluator* ev,
                   std::string* s) {
+  if (g_flags.buildxl_output && ev->avoid_io())
+    ev->Error("BuildXL does not support deferred $(realpath) in recipes");
   const std::string&& text = args[0]->Eval(ev);
   if (ev->avoid_io()) {
     *s += "$(";
@@ -595,6 +598,10 @@ bool ShouldStoreCommandResult(std::string_view cmd) {
 }
 
 void ShellFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+  if (g_flags.buildxl_output && ev->avoid_io())
+    ev->Error(
+        "BuildXL does not support deferred $(shell) in recipes or exported "
+        "variables");
   std::string cmd = args[0]->Eval(ev);
   if (ev->avoid_io() && !HasNoIoInShellScript(cmd)) {
     if (ev->eval_depth() > 1) {
@@ -634,6 +641,8 @@ void ShellFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
 void ShellFuncNoRerun(const std::vector<Value*>& args,
                       Evaluator* ev,
                       std::string* s) {
+  if (g_flags.buildxl_output && ev->avoid_io())
+    ev->Error("BuildXL does not support deferred $(KATI_shell_no_rerun)");
   std::string cmd = args[0]->Eval(ev);
   if (ev->avoid_io() && !HasNoIoInShellScript(cmd)) {
     // In the regular ShellFunc, if it sees a $(shell) inside of a rule when in
@@ -818,6 +827,10 @@ void FlavorFunc(const std::vector<Value*>& args,
 void InfoFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
   const std::string&& a = args[0]->Eval(ev);
   if (ev->avoid_io()) {
+    if (g_flags.buildxl_output) {
+      ev->add_delayed_output_command("printf '%s\\n' " + QuoteShellLiteral(a));
+      return;
+    }
     ev->add_delayed_output_command(
         StringPrintf("echo -e \"%s\"", EchoEscape(a).c_str()));
     return;
@@ -829,6 +842,14 @@ void InfoFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
 void WarningFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
   const std::string&& a = args[0]->Eval(ev);
   if (ev->avoid_io()) {
+    if (g_flags.buildxl_output) {
+      ev->add_delayed_output_command(
+          "printf '%s\\n' " +
+          QuoteShellLiteral(
+              StringPrintf("%s:%d: %s", LOCF(ev->loc()), a.c_str())) +
+          " >&2");
+      return;
+    }
     ev->add_delayed_output_command(StringPrintf(
         "echo -e \"%s:%d: %s\" 2>&1", LOCF(ev->loc()), EchoEscape(a).c_str()));
     return;
@@ -839,6 +860,14 @@ void WarningFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
 void ErrorFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
   const std::string&& a = args[0]->Eval(ev);
   if (ev->avoid_io()) {
+    if (g_flags.buildxl_output) {
+      ev->add_delayed_output_command(
+          "printf '%s\\n' " +
+          QuoteShellLiteral(
+              StringPrintf("%s:%d: *** %s.", LOCF(ev->loc()), a.c_str())) +
+          " >&2; false");
+      return;
+    }
     ev->add_delayed_output_command(
         StringPrintf("echo -e \"%s:%d: *** %s.\" 2>&1 && false",
                      LOCF(ev->loc()), EchoEscape(a).c_str()));
