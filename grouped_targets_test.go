@@ -219,6 +219,58 @@ func TestGroupedTargetsDefaultGoal(t *testing.T) {
 	}
 }
 
+func TestGroupedTargetsIgnoreMemberImplicitRules(t *testing.T) {
+	kati, err := filepath.Abs("ckati")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, backend := range []string{"direct", "ninja", "buildxl"} {
+		for _, order := range []string{"a.o b.o", "b.o a.o"} {
+			for _, rule := range []string{"suffix", "pattern"} {
+				t.Run(backend+"/"+order+"/"+rule, func(t *testing.T) {
+					dir := groupedTestDir(t)
+					makefile := "all: " + order + "\na.o b.o &: a.c b.c\n" +
+						"\t@echo grouped >> calls\n\t@cat a.c > a.o\n\t@cat b.c > b.o\n"
+					if rule == "pattern" {
+						makefile += "%.o: %.c\n\t@echo implicit >> calls\n\t@cp $< $@\n"
+					}
+					dgWrite(t, dir, "Makefile", makefile)
+					dgWrite(t, dir, "a.c", "first\n")
+					dgWrite(t, dir, "b.c", "second\n")
+					run := func(program string, args ...string) {
+						t.Helper()
+						cmd := exec.Command(program, args...)
+						cmd.Dir = dir
+						if output, err := cmd.CombinedOutput(); err != nil {
+							t.Fatalf("%s %v: %v\n%s", program, args, err, output)
+						}
+					}
+					switch backend {
+					case "direct":
+						run(kati, "all")
+					case "ninja":
+						run(kati, "--ninja", "all")
+						run("ninja", "-j2", "all")
+					case "buildxl":
+						g, _ := dgGenerate(t, dir, "all")
+						if err := dgExecute(t, g); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for name, expected := range map[string]string{
+						"calls": "grouped\n", "a.o": "first\n", "b.o": "second\n",
+					} {
+						data, err := ioutil.ReadFile(filepath.Join(dir, name))
+						if err != nil || string(data) != expected {
+							t.Fatalf("%s: got %q, want %q, error %v", name, data, expected, err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestGroupedTargetsRejectUnsupportedForms(t *testing.T) {
 	kati, err := filepath.Abs("ckati")
 	if err != nil {

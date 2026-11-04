@@ -638,6 +638,10 @@ class DepBuilder {
     Vars* vars = LookupRuleVars(output);
     *out_rule_merger = rule_merger;
     *out_var = vars;
+    // Implicit-output members use their parent's recipe, not an implicit rule.
+    if (rule_merger && rule_merger->parent) {
+      return true;
+    }
     if (rule_merger && rule_merger->primary_rule) {
       for (auto implicit_output : rule_merger->implicit_outputs) {
         vars = MergeImplicitRuleVars(implicit_output.first, vars);
