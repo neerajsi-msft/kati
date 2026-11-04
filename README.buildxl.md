@@ -180,7 +180,9 @@ and quoted literals. Supported quoted escapes are `\\`, `\"`, `\n`, `\r`, `\t`;
 use literal UTF-8 rather than Unicode escape sequences. NUL, malformed tokens,
 unknown records/fields and invalid references are errors, with config record
 locations. Table records precede the single optional `process` section.
-Paths are normalized against Kati's evaluation directory. Supplied IDs are
+Config artifact references are normalized lexically against Kati's evaluation
+directory, without resolving or rejecting symlinked roots (such as `/bin`).
+They are bound by BuildXL, not treated as Make products. Supplied IDs are
 dense and stable, including repeated values. Kati emits all supplied tables
 itself and independently starts generated path/string/set IDs after each prefix;
 IDs never reference another fragment's tables.

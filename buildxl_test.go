@@ -312,6 +312,32 @@ process
 	}
 }
 
+func TestBuildXLConfigPreservesSymlinkedArtifactReferences(t *testing.T) {
+	dir := dgDir(t)
+	dgWrite(t, dir, "real/input", "source")
+	if err := os.Symlink("real", filepath.Join(dir, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	dgWrite(t, dir, "Makefile", "out:\n\t@echo done > $@\n")
+	dgWrite(t, dir, "config", `buildxlConfig 1
+path 0 "linked/."
+path 1 "linked/input"
+process
+  inputDirectory $p0 "provider/seal"
+  input $p1
+`)
+	g, _ := dgGenerate(t, dir, "--buildxl_config=config")
+	if g.Paths["0"] != filepath.Join(dir, "linked") ||
+		g.Paths["1"] != filepath.Join(dir, "linked", "input") {
+		t.Fatalf("config references must normalize lexically without resolving symlinks: %+v", g.Paths)
+	}
+	op := dgProcess(t, g, "out")
+	if !reflect.DeepEqual(op.ProcessFields["inputDirectory"], [][]string{{filepath.Join(dir, "linked"), "provider/seal"}}) ||
+		!reflect.DeepEqual(g.inputs(t, op, false), []dgRef{{SourcePath: filepath.Join(dir, "linked", "input")}}) {
+		t.Fatalf("symlinked references changed: %+v", op)
+	}
+}
+
 func TestBuildXLConfigDoesNotAmendGeneratedScripts(t *testing.T) {
 	dir := dgDir(t)
 	dgWrite(t, dir, "Makefile", "out:\n\t@"+strings.Repeat("true; ", 20000)+"echo done > $@\n")

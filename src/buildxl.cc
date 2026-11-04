@@ -246,7 +246,7 @@ class BuildXLGenerator {
 
   void Generate(const std::vector<NamedDepNode>& roots) {
     config_.Load(g_flags.buildxl_config, [&](std::string_view value) {
-      std::filesystem::path path(Path(value));
+      std::filesystem::path path(Path(value, Loc(), false));
       if (path != path.root_path() && path.filename().empty()) {
         path = path.parent_path();
       }
