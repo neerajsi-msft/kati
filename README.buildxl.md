@@ -42,7 +42,9 @@ integers starting at zero in registration order. Definitions precede uses and
 are never inserted inside field blocks.
 
 Operations are topologically ordered `process` or `writeFile` records.
-Processes use Kati's shell (`SHELL` must be an absolute executable path), literal
+Processes use Kati's shell (`SHELL` must start with an absolute executable path;
+literal options, quoting and escaping are supported, but shell expansions and
+operators are rejected), literal
 arguments, an explicit evaluation-environment snapshot plus scoped exports,
 declared file inputs/outputs, and `dependsOnCurrentOs`. Process fields are
 `executable`, `workingDirectory`, repeated `argument`, repeated

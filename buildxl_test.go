@@ -943,6 +943,69 @@ func TestBuildXLFailureStopsRecipe(t *testing.T) {
 	}
 }
 
+func TestBuildXLShellExecutableAndOptions(t *testing.T) {
+	for _, mode := range []string{"inline", "inner-script", "aggregate-script"} {
+		for _, posix := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/posix=%v", mode, posix), func(t *testing.T) {
+				dir := dgDir(t)
+				shell := filepath.Join(dir, "bash shell")
+				if err := os.Symlink("/bin/bash", shell); err != nil {
+					t.Fatal(err)
+				}
+				shellValue := "'" + shell + "' -o \"pipefail\""
+				if mode == "inline" {
+					shell = "/bin/bash"
+					shellValue = shell + " -o pipefail"
+				} else if mode == "aggregate-script" {
+					shellValue = strings.ReplaceAll(shell, " ", "\\ ") + " -o pipefail"
+				}
+				prefix := "SHELL = " + shellValue + "\n"
+				if posix {
+					prefix += ".POSIX:\n"
+				}
+				padding := ""
+				switch mode {
+				case "inner-script":
+					padding = ": " + strings.Repeat("x", 110000) + "; "
+				case "aggregate-script":
+					padding = strings.Repeat("\t@: "+strings.Repeat("x", 40000)+"\n", 4)
+				}
+				recipe := "\t@" + padding + "printf '%s' \"$$SHELLOPTS\" > out\n"
+				failure := "\t@" + padding + "false | true\n\t@touch out\n"
+				if mode == "aggregate-script" {
+					recipe = padding + "\t@printf '%s' \"$$SHELLOPTS\" > out\n"
+					failure = padding + "\t@false | true\n\t@touch out\n"
+				}
+				dgWrite(t, dir, "Makefile", prefix+"out:\n"+recipe)
+				g, _ := dgGenerate(t, dir)
+				op := dgProcess(t, g, "out")
+				if op.Executable != shell || len(op.Arguments) < 3 ||
+					!reflect.DeepEqual(op.Arguments[:2], []string{"-o", "pipefail"}) {
+					t.Fatalf("shell executable/options not separated: %q %v", op.Executable, op.Arguments)
+				}
+				if err := dgExecute(t, g); err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(filepath.Join(dir, "out"))
+				if err != nil || !strings.Contains(string(data), "pipefail") {
+					t.Fatalf("recipe shell lost options: %q, %v", data, err)
+				}
+				if err := os.Remove(filepath.Join(dir, "out")); err != nil {
+					t.Fatal(err)
+				}
+				dgWrite(t, dir, "Makefile", prefix+"out:\n"+failure)
+				g, _ = dgGenerate(t, dir)
+				if err := dgExecute(t, g); err == nil || !strings.Contains(err.Error(), "action ") {
+					t.Fatalf("pipefail must fail the action: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(dir, "out")); !os.IsNotExist(err) {
+					t.Fatal("failed pipeline continued to subsequent recipe")
+				}
+			})
+		}
+	}
+}
+
 func TestBuildXLDelayedEffectsAndPosix(t *testing.T) {
 	for _, posix := range []bool{false, true} {
 		t.Run(fmt.Sprint(posix), func(t *testing.T) {
@@ -1107,6 +1170,9 @@ func TestBuildXLRejectUnsupported(t *testing.T) {
 		"duplicate-owner":  {"all: out @ROOT@/out\nout @ROOT@/out: ; @touch $@\n", nil, "duplicate output ownership"},
 		"directory-output": {"out/: ; @mkdir -p out\n", nil, "file outputs only"},
 		"relative-shell":   {"SHELL = sh\nout: ; @touch out\n", nil, "absolute executable path"},
+		"shell-quote":      {"SHELL = '/bin/bash\nout: ; @touch out\n", nil, "unterminated SHELL quote"},
+		"shell-expansion":  {"SHELL = /bin/bash $$FLAGS\nout: ; @touch out\n", nil, "unsupported SHELL syntax"},
+		"shell-operator":   {"SHELL = /bin/bash; touch side-effect\nout: ; @touch out\n", nil, "unsupported SHELL syntax"},
 		"shell-flags":      {".SHELLFLAGS = -xc\nout: ; @touch out\n", nil, "custom .SHELLFLAGS"},
 		"normalized-cycle": {"all: out next\nout: @ROOT@/next\n\t@touch out\nnext: @ROOT@/out\n\t@touch next\n", nil, "artifact dependency cycle"},
 		"mutual-exclusion": {"out: ; @touch out\n", []string{"--ninja"}, "mutually exclusive"},

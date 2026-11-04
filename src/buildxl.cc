@@ -70,6 +70,62 @@ std::string Quote(std::string_view s) {
   return QuoteShellLiteral(s);
 }
 
+// SHELL may include options. Decode literal shell words without executing
+// expansions or silently treating shell syntax as executable arguments.
+std::vector<std::string> ShellWords(std::string_view value, const Loc& loc) {
+  std::vector<std::string> words;
+  std::string word;
+  char quote = 0;
+  bool started = false;
+  for (size_t i = 0; i < value.size(); ++i) {
+    const char c = value[i];
+    if (c == '\0' || c == '\n' || c == '\r') {
+      ERROR_LOC(loc, "BuildXL unsupported SHELL syntax");
+    }
+    if (quote != '\'' && c == '\\') {
+      if (++i == value.size()) {
+        ERROR_LOC(loc, "BuildXL unterminated SHELL escape");
+      }
+      const char next = value[i];
+      if (next == '\0' || next == '\n' || next == '\r') {
+        ERROR_LOC(loc, "BuildXL unsupported SHELL syntax");
+      }
+      if (quote == '"' && next != '$' && next != '`' && next != '"' &&
+          next != '\\') {
+        word += '\\';
+      }
+      word += next;
+      started = true;
+    } else if (quote && c == quote) {
+      quote = 0;
+    } else if (!quote && (c == '\'' || c == '"')) {
+      quote = c;
+      started = true;
+    } else if (!quote && (c == ' ' || c == '\t')) {
+      if (started) {
+        words.push_back(std::move(word));
+        word.clear();
+        started = false;
+      }
+    } else {
+      if ((quote != '\'' && (c == '$' || c == '`')) ||
+          (!quote && std::string_view("|&;<>()*?[]~#").find(c) !=
+                         std::string_view::npos)) {
+        ERROR_LOC(loc, "BuildXL unsupported SHELL syntax");
+      }
+      word += c;
+      started = true;
+    }
+  }
+  if (quote) {
+    ERROR_LOC(loc, "BuildXL unterminated SHELL quote");
+  }
+  if (started) {
+    words.push_back(std::move(word));
+  }
+  return words;
+}
+
 // Lossless string factoring, not shell tokenization: quotes stay literal
 // chunks.
 std::vector<std::string_view> StringParts(std::string_view value) {
@@ -111,6 +167,7 @@ struct Action {
   const DepNode* node;
   std::string name;
   std::string_view shell;
+  std::vector<std::string> shell_arguments;
   std::string flags;
   std::map<std::string_view, std::string_view> environment;
   std::vector<Command> commands;
@@ -311,14 +368,15 @@ class BuildXLGenerator {
       if (ev_->LookupVar(Intern(".SHELLFLAGS"))->IsDefined()) {
         ERROR_LOC(loc, "BuildXL does not support custom .SHELLFLAGS");
       }
-      const std::string shell = ev_->GetShell();
+      std::vector<std::string> shell = ShellWords(ev_->GetShell(), loc);
       a.flags = ev_->GetShellFlag();
       ev_->set_current_scope(nullptr);
-      if (shell.empty() || shell.front() != '/' ||
-          shell.find('\0') != std::string::npos) {
+      if (shell.empty() || shell.front().empty() ||
+          shell.front().front() != '/') {
         ERROR_LOC(loc, "BuildXL SHELL must be an absolute executable path");
       }
-      a.shell = Path(shell, loc, false);
+      a.shell = Path(shell.front(), loc, false);
+      a.shell_arguments.assign(shell.begin() + 1, shell.end());
       a.environment = Environment(*n);
       a.outputs.push_back(Path(n->output.str(), loc));
       for (Symbol s : n->implicit_outputs) {
@@ -621,6 +679,11 @@ class BuildXLGenerator {
   // limits.
   void Lower(Action& a) {
     const size_t limit = 100000;
+    std::string shell = Quote(a.shell);
+    for (const std::string& argument : a.shell_arguments) {
+      shell += " " + Quote(argument);
+    }
+    a.arguments = a.shell_arguments;
     size_t index = 0;
     for (const Command& c : a.commands) {
       std::string raw;
@@ -640,10 +703,9 @@ class BuildXLGenerator {
         // This recipe exceeds the inner shell -c argument limit; spilling the
         // outer wrapper wouldn't fix it. Quote the script path as shell text.
         const std::string_view path = AddScript(a, index++, raw);
-        invocation =
-            Quote(a.shell) + (a.flags == "-ec" ? " -e " : " ") + Quote(path);
+        invocation = shell + (a.flags == "-ec" ? " -e " : " ") + Quote(path);
       } else {
-        invocation = Quote(a.shell) + " " + a.flags + " " + Quote(raw);
+        invocation = shell + " " + a.flags + " " + Quote(raw);
       }
 
       if (c.ignore_error) {
@@ -663,7 +725,8 @@ class BuildXLGenerator {
 
       a.arguments.emplace_back(path);
     } else {
-      a.arguments = {a.flags, a.script};
+      a.arguments.push_back(a.flags);
+      a.arguments.push_back(a.script);
     }
   }
 
