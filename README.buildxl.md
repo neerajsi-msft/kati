@@ -267,3 +267,50 @@ producer-qualified `tools/hostUsr` directory input. Prepend the emitted
 The optional BuildXL regression detects and loads these earlier fragments.
 This fixture still runs Kati outside BuildXL; it does not claim pregraph-pip
 tracking or real product compatibility validation.
+
+## SDK Make compatibility inventory (read-only, 2026-11-04)
+
+Inspection covered 171 installed Make/`.mk`/`.mak` files under the SDK delivery
+tree's `FunSDK`, `FunDoc`, `lib`, `scripts` and `integration_test` directories.
+No SDK file was modified and no SDK/BoB graph or recipe was generated/executed.
+These are extraction requirements, not product compatibility results:
+
+* **FORCE:** `co3-build-inputs.mk`'s `co3-build-inputs-rule` depends on the
+  commandless `co3-build-inputs-force` and writes change-only environment content.
+  `lib/krml/Makefile` uses `.FORCE` for `.depend`. The exporter flattens these
+  structural aliases; it does not emulate unconditional Make timestamps.
+  Content-addressed reuse is appropriate only with actual evaluation/action
+  inputs tracked. Do not blanket-disable caching for FORCE.
+* **Recursive Make:** `co3-prebuild.mk`, `co3-vars.mk`, `co3-postbuild.mk`,
+  `co3-package-helper.mk` and `lib/krml/Makefile` invoke `$(MAKE)`.
+  `co3-cap-gen` deliberately relies on targets available only in sub-makes.
+  Kati does not extract child build graphs or hidden products; commandful phony
+  actions are rejected. Integration must explicitly select/lower child actions
+  or use properly declared coarse workers. Generated includes/extraction
+  lifecycle also need deliberate pregraph ordering.
+* **Grouped/implicit products:** `lib/krml/Makefile` has three `&:` pairs for
+  `Makefile.include`/`Makefile.basic`; the grouped-owner implementation covers
+  these declarations. Their recipes also emit/copy headers and archives.
+  Co3 extraction similarly has a combined-JSON owner, a value-JSON byproduct
+  and existence-only assertion recipes; split-header wildcards can be empty in
+  clean trees. `Phase.Target.co3.io` explicitly describes directory-shaped
+  output with names not derivable from input patterns. No
+  `.KATI_IMPLICIT_OUTPUTS` declarations were found in this bounded inventory.
+  These hidden products need real declared file ownership or explicit dynamic
+  directory providers; uniform private writable roots alone do not publish
+  them. Do not discover generated membership by scanning existing outputs.
+* **Compiler side outputs:** `Tool.gcc.1.mkflags_recipe` emits `-MMD/-MP/-MF`;
+  `tools-gcc.mk`, `tools-clang.mk` and `tools-gccmips64.mk` also produce depfiles.
+  The exporter does not infer dependencies/products from them and rejects
+  explicit `.KATI_DEPFILE`/automatic Ninja depfile options. Callers must supply
+  explicit file/directory grants and writable side-output roots as appropriate.
+* **Symlinks:** `co3-package-helper.mk`'s image-stamp recipe uses `ln -sf`;
+  `Phase.Target.mkpkg` uses `BuildRoot.ln`, and the FunOSPosix FIPS toolchain
+  declares `Tool.ln.1.fipssec`. Existing symlink components in artifact paths
+  are rejected by the exporter. It does not infer symlink targets or extra
+  accesses from shell commands. Generated-link sandbox/cache behavior and
+  declarations remain integration obligations, not newly validated support.
+
+No additional Make capability or blanket cache policy was justified by this
+read-only inventory. Real consumer validation, including stricter source seals,
+wrapper job-control forwarding and BoB trial wiring, remains separately gated.
