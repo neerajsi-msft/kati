@@ -548,7 +548,7 @@ func TestBuildXLTextEscapingAndFactoring(t *testing.T) {
 	if err := os.Mkdir(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	literal := "$HOME @not-a-set \"quote\" \\slash\nline\rtab\t\x01\x7f é " + strings.Repeat("repeat ", 256)
+	literal := "$HOME @not-a-set \"quote\" \\slash\nline\rtab\t\x01\x7f\u0080\u0085\u009f é\u00a0\u07ff\u0800\uffff\U0001f600\U0010ffff " + strings.Repeat("repeat ", 256)
 	t.Setenv("DG_LITERAL", literal)
 	t.Setenv("DG_EMPTY", "")
 	dgWrite(t, dir, "input", "source\n")
@@ -564,7 +564,7 @@ func TestBuildXLTextEscapingAndFactoring(t *testing.T) {
 	if atom == "" || strings.Count(string(data), "$s"+atom+"\n") != 2 {
 		t.Fatal("repeated environment literals must use one string ID and two references")
 	}
-	for _, escaped := range []string{`\"quote\"`, `\\slash`, `\nline\rtab\t\u0001\u007f`} {
+	for _, escaped := range []string{`\"quote\"`, `\\slash`, `\nline\rtab\t\u0001\u007f\u0080\u0085\u009f`} {
 		if !strings.Contains(string(data), escaped) {
 			t.Fatalf("missing text escape %q", escaped)
 		}
@@ -1143,6 +1143,41 @@ func TestBuildXLSpecialTargetsMatchNinja(t *testing.T) {
 				if err != nil || string(content) != "generated\n" {
 					t.Fatalf("%s: content %q, error %v", name, content, err)
 				}
+			}
+		})
+	}
+}
+
+func TestBuildXLRejectInvalidUtf8BeforePublishing(t *testing.T) {
+	binary, err := filepath.Abs("ckati")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"continuation":     "\x80",
+		"overlong-two":     "\xc0\x80",
+		"overlong-three":   "\xe0\x80\x80",
+		"overlong-four":    "\xf0\x80\x80\x80",
+		"truncated":        "\xe2\x82",
+		"surrogate":        "\xed\xa0\x80",
+		"out-of-range":     "\xf4\x90\x80\x80",
+		"invalid-leading":  "\xf5\x80\x80\x80",
+		"invalid-trailing": "\xe2\x28\xa1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := dgDir(t)
+			dgWrite(t, dir, "Makefile", "out: ; @touch out\n")
+			dgWrite(t, dir, "fragment.dg", "previous fragment")
+			cmd := exec.Command(binary, "--buildxl=fragment.dg")
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "DG_INVALID_UTF8="+value)
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "BuildXL text requires valid UTF-8") {
+				t.Fatalf("expected invalid UTF-8 diagnostic: %v\n%s", err, output)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, "fragment.dg"))
+			if err != nil || string(data) != "previous fragment" {
+				t.Fatalf("failed generation overwrote existing fragment: %q, %v", data, err)
 			}
 		})
 	}

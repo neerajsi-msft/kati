@@ -34,7 +34,8 @@ field per line. All path/string fields require typed intern references, matching
 the gRPC interface's ID-valued fields, even for values used once. Operation names
 and enum/option values remain literal.
 Quoted tokens escape `\\`, `\"`, `\n`, `\r`, `\t`, and other ASCII controls
-with `\uXXXX`; they never expand environment variables. Blank lines and
+with `\uXXXX`; they never expand environment variables. Literals must be valid
+UTF-8; invalid values are rejected before writing the fragment. Blank lines and
 full-line `#` comments are permitted. A top-level record or EOF ends a field
 block. `path ID "literal"` and `string ID "literal"` define immutable,
 fragment-local values referenced by `$pID` and `$sID`. Each table uses dense

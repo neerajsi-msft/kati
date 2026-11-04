@@ -36,9 +36,62 @@ extern char** environ;
 
 namespace {
 
+bool IsValidUtf8(std::string_view value) {
+  for (size_t i = 0; i < value.size(); ++i) {
+    const unsigned char c = value[i];
+    if (c < 0x80) {
+      continue;
+    }
+    unsigned codepoint;
+    unsigned minimum;
+    size_t continuation;
+    if (c >= 0xc2 && c <= 0xdf) {
+      codepoint = c & 0x1f;
+      minimum = 0x80;
+      continuation = 1;
+    } else if (c >= 0xe0 && c <= 0xef) {
+      codepoint = c & 0x0f;
+      minimum = 0x800;
+      continuation = 2;
+    } else if (c >= 0xf0 && c <= 0xf4) {
+      codepoint = c & 0x07;
+      minimum = 0x10000;
+      continuation = 3;
+    } else {
+      return false;
+    }
+    if (continuation >= value.size() - i) {
+      return false;
+    }
+    for (size_t j = 0; j < continuation; ++j) {
+      const unsigned char next = value[++i];
+      if ((next & 0xc0) != 0x80) {
+        return false;
+      }
+      codepoint = (codepoint << 6) | (next & 0x3f);
+    }
+    if (codepoint < minimum || codepoint > 0x10ffff ||
+        (codepoint >= 0xd800 && codepoint <= 0xdfff)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void Literal(std::ostream& out, std::string_view s) {
   out << '"';
-  for (unsigned char c : s) {
+  for (size_t i = 0; i < s.size(); ++i) {
+    const unsigned char c = s[i];
+    // C1 controls are two-byte UTF-8 sequences, unlike the ASCII controls
+    // below.
+    if (c == 0xc2 && i + 1 < s.size()) {
+      const unsigned char next = s[i + 1];
+      if (next >= 0x80 && next <= 0x9f) {
+        out << StringPrintf("\\u%04x", next);
+        ++i;
+        continue;
+      }
+    }
     switch (c) {
       case '"':
         out << "\\\"";
@@ -594,8 +647,11 @@ class BuildXLGenerator {
   }
 
   void InternValues(const Action& a) {
-    auto intern = [](auto* table, std::string_view value) {
+    auto intern = [&a](auto* table, std::string_view value) {
       if (table->find(value) == table->end()) {
+        if (!IsValidUtf8(value)) {
+          ERROR_LOC(a.node->loc, "BuildXL text requires valid UTF-8");
+        }
         table->emplace(value, table->size());
       }
     };
