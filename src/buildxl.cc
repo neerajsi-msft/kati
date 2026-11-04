@@ -23,6 +23,7 @@
 #include <set>
 #include <unordered_map>
 
+#include "buildxl_config.h"
 #include "command.h"
 #include "eval.h"
 #include "flags.h"
@@ -244,6 +245,33 @@ class BuildXLGenerator {
         base_environment_(BaseEnvironment()) {}
 
   void Generate(const std::vector<NamedDepNode>& roots) {
+    config_.Load(g_flags.buildxl_config,
+                 [&](std::string_view value) { return Path(value); });
+    if (g_flags.buildxl_config) {
+      sources_.emplace(Path(g_flags.buildxl_config), Loc());
+    }
+    for (size_t id = 0; id < config_.paths.size(); ++id) {
+      const auto& value = InternPath(config_.paths[id]);
+      if (!IsValidUtf8(value)) {
+        ERROR("BuildXL config text requires valid UTF-8");
+      }
+      paths_.emplace(value, id);
+    }
+    for (size_t id = 0; id < config_.strings.size(); ++id) {
+      if (!IsValidUtf8(config_.strings[id])) {
+        ERROR("BuildXL config text requires valid UTF-8");
+      }
+      strings_.emplace(config_.strings[id], id);
+    }
+    for (const auto& row : config_.process) {
+      for (const auto& token : row.tokens) {
+        if (!IsValidUtf8(token.value)) {
+          ERROR_LOC(row.loc, "BuildXL config text requires valid UTF-8");
+        }
+      }
+    }
+    path_id_bias_ = config_.paths.size() - paths_.size();
+    string_id_bias_ = config_.strings.size() - strings_.size();
     ValidateConfiguration();
     ev_->set_avoid_io(true);
     for (const auto& p : roots) {
@@ -253,6 +281,9 @@ class BuildXLGenerator {
     ResolveDependencies(roots);
     for (Action& a : actions_) {
       Lower(a);
+    }
+    config_.ValidateProducts(owners_, actions_.size());
+    for (Action& a : actions_) {
       InternValues(a);
     }
     const auto owner = owners_.find(filename_);
@@ -573,8 +604,10 @@ class BuildXLGenerator {
   }
 
   void EmitValueTables(std::ostream& out) const {
-    auto emit = [&](const auto& table, bool path) {
-      std::vector<std::string_view> values(table.size());
+    auto emit = [&](const auto& table, const auto& prefix, size_t bias,
+                    bool path) {
+      std::vector<std::string_view> values(table.size() + bias);
+      std::copy(prefix.begin(), prefix.end(), values.begin());
       for (const auto& p : table) {
         values[p.second] = p.first;
       }
@@ -584,12 +617,19 @@ class BuildXLGenerator {
         out << '\n';
       }
     };
-    emit(paths_, true);
-    emit(strings_, false);
+    emit(paths_, config_.paths, path_id_bias_, true);
+    emit(strings_, config_.strings, string_id_bias_, false);
   }
 
   void EmitDependencySets(std::ostream& out) {
     size_t set_id = 0;
+    for (const auto& members : config_.sets) {
+      out << "set " << set_id++;
+      for (size_t path : members) {
+        out << " $p" << path;
+      }
+      out << '\n';
+    }
     for (const auto& p : set_counts_) {
       if (p.second < 2) {
         continue;
@@ -647,35 +687,41 @@ class BuildXLGenerator {
   }
 
   void InternValues(const Action& a) {
-    auto intern = [&a](auto* table, std::string_view value) {
+    auto intern = [&a](auto* table, size_t bias, std::string_view value) {
       if (table->find(value) == table->end()) {
         if (!IsValidUtf8(value)) {
           ERROR_LOC(a.node->loc, "BuildXL text requires valid UTF-8");
         }
-        table->emplace(value, table->size());
+        table->emplace(value, table->size() + bias);
       }
     };
-    intern(&paths_, a.shell);
-    intern(&paths_, root_);
+    auto path = [&](std::string_view value) {
+      intern(&paths_, path_id_bias_, value);
+    };
+    auto str = [&](std::string_view value) {
+      intern(&strings_, string_id_bias_, value);
+    };
+    path(a.shell);
+    path(root_);
     for (const auto* list :
          {&a.normal, &a.ordered, &a.outputs, &a.script_inputs}) {
       for (const auto& value : *list) {
-        intern(&paths_, value);
+        path(value);
       }
     }
     for (const auto& value : a.arguments) {
       for (std::string_view part : StringParts(value)) {
-        intern(&strings_, part);
+        str(part);
       }
     }
     for (const auto& p : a.environment) {
-      intern(&strings_, p.first);
-      intern(&strings_, p.second);
+      str(p.first);
+      str(p.second);
     }
     for (const auto& script : a.scripts) {
-      intern(&paths_, script.path);
+      path(script.path);
       for (std::string_view part : StringParts(script.content)) {
-        intern(&strings_, part);
+        str(part);
       }
     }
   }
@@ -699,7 +745,22 @@ class BuildXLGenerator {
       Value(out, p.second, false);
       out << '\n';
     }
-    out << "  option dependsOnCurrentOs\n";
+    if (!config_.HasOption("dependsOnCurrentOs") &&
+        !config_.HasOption("dependsOnCurrentHostOsDirectories")) {
+      out << "  option dependsOnCurrentOs\n";
+    }
+    for (const auto& row : config_.process) {
+      out << "  " << row.tokens[0].value;
+      for (size_t i = 1; i < row.tokens.size(); ++i) {
+        out << ' ';
+        if (row.tokens[i].quoted) {
+          Literal(out, row.tokens[i].value);
+        } else {
+          out << row.tokens[i].value;
+        }
+      }
+      out << '\n';
+    }
     Inputs(out, "input", a.normal);
     for (const auto& path : a.script_inputs) {
       Field(out, "input", path);
@@ -807,6 +868,9 @@ class BuildXLGenerator {
   std::map<std::vector<std::string_view>, size_t> set_ids_;
   std::map<std::string_view, size_t> paths_;
   std::map<std::string, size_t, std::less<>> strings_;
+  BuildXLConfig config_;
+  size_t path_id_bias_ = 0;
+  size_t string_id_bias_ = 0;
 };
 
 }  // namespace

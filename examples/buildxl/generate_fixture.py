@@ -13,6 +13,7 @@
 """Generate BuildXL fixtures in DirectGraph format without executing recipes."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -21,6 +22,7 @@ import subprocess
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", help="new isolated destination directory")
+    parser.add_argument("--configured", action="store_true", help="exercise config prefixes and cross-fragment process inputs")
     args = parser.parse_args()
     destination = Path(args.directory).resolve()
     kati = Path(__file__).resolve().parents[2] / "ckati"
@@ -56,6 +58,33 @@ def main():
         "TMPDIR": str(scratch),
         "LC_ALL": "C",
     }
+    config_args = []
+    if args.configured:
+        inputs = destination / "policy-inputs"
+        inputs.mkdir()
+        (inputs / "extra").write_text("extra tracked source\n", encoding="utf-8")
+        config = destination / "emission.config"
+        config.write_text(
+            "buildxlConfig 1\n"
+            + "".join(f"path {i} {json.dumps(str(path))}\n" for i, path in enumerate([
+                inputs, Path("/usr"), inputs / "extra", destination / "private-side",
+            ]))
+            + 'string 0 "fixture-mutex"\nset 0 $p2\nprocess\n'
+            + '  input @0\n  inputDirectory $p0 inputs\n'
+            + '  inputDirectory $p1 "tools/hostUsr"\n'
+            + '  outputDirectory $p3 shared\n  semaphore $s0 1 1\n'
+            + '  enableTempDirectory true\n',
+            encoding="utf-8",
+        )
+        config_args = ["--buildxl_config=" + str(config)]
+        for project in makefiles:
+            (destination / (project + "-inputs.dg")).write_text(
+                f"directgraph 2\npath 0 {json.dumps(str(inputs))}\n"
+                'string 0 ".git"\nsealDirectory inputs\n'
+                '  directoryRoot $p0\n  sealKind sourceAllDirectories\n'
+                '  sourceExclusion $s0\n',
+                encoding="utf-8",
+            )
     for project, makefile in makefiles.items():
         directory = destination / project
         directory.mkdir()
@@ -65,6 +94,7 @@ def main():
                 str(kati),
                 "--no_builtin_rules",
                 "--buildxl=" + str(destination / (project + ".dg")),
+                *config_args,
                 "all",
             ],
             cwd=directory,
@@ -96,6 +126,12 @@ def main():
         "export consumer file consumer/consumer.out\n",
         encoding="utf-8",
     )
+    if args.configured:
+        (destination / "configured.txt").write_text(
+            "Prepend producer-inputs.dg and consumer-inputs.dg to the respective graphFiles.\n"
+            "Declare emission.config as a tracked input of each pregraph Kati pip.\n",
+            encoding="utf-8",
+        )
     print(destination / "projects.txt")
 
 

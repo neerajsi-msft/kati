@@ -87,6 +87,10 @@ void Flags::Parse(int argc, char** argv) {
                                              &buildxl_output)) {
       if (!buildxl_output || !*buildxl_output)
         ERROR("--buildxl requires a nonempty output filename");
+    } else if (ParseCommandLineOptionWithArg("--buildxl_config", argv, &i,
+                                             &buildxl_config)) {
+      if (!buildxl_config || !*buildxl_config)
+        ERROR("--buildxl_config requires a nonempty filename");
     } else if (!strcmp(arg, "--empty_ninja_file")) {
       generate_empty_ninja = true;
     } else if (!strcmp(arg, "--gen_all_targets")) {
@@ -215,6 +219,8 @@ void Flags::Parse(int argc, char** argv) {
 
   if (buildxl_output && generate_ninja)
     ERROR("--buildxl and --ninja are mutually exclusive");
+  if (buildxl_config && !buildxl_output)
+    ERROR("--buildxl_config requires --buildxl");
   if (buildxl_output && (regen || dump_kati_stamp || generate_empty_ninja))
     ERROR("--buildxl does not support Ninja regeneration options");
 

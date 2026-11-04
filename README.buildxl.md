@@ -52,7 +52,8 @@ declared file inputs/outputs, and `dependsOnCurrentOs`. Process fields are
 `environment NAME VALUE`, repeated `option`, repeated `input`, repeated
 `orderOnly`, and repeated `output`. `writeFile` has `destination` and `content`.
 All file references are paths only. The consuming resolver matches local and
-visible dependency outputs first; other inputs require an explicit source seal.
+visible dependency outputs first; otherwise explicit file inputs are tracked
+source files, like DScript. Directory grants require explicit directory inputs.
 Kati emits absolute, lexical-normalized paths, so there is no root record.
 Kati emits **no exports**: project configuration or policy fragments select
 recipe outputs, including grouped and `.KATI_IMPLICIT_OUTPUTS` members.
@@ -148,6 +149,63 @@ normally declared generated-header producer input (skipped only if `cc` is
 unavailable). This checks host recipe execution, not BuildXL sandbox/toolchain
 authorization.
 
+## Emission config
+
+`--buildxl_config=FILE` (only with `--buildxl`) reads one caller-supplied config.
+The pregraph generation pip **must declare FILE as a tracked input**, alongside
+the Make evaluation inputs. Kati reads it; it does not discover providers,
+publish exports, mutate earlier operations or add these fields in the loader.
+
+```text
+buildxlConfig 1
+path 0 "/dependency/input"
+path 1 "/dependency/include"
+path 2 "/project/private-side-outputs"
+string 0 "compiler-slots"
+set 0 $p0
+process
+  input @0
+  inputDirectory $p1 "dependency/headers"
+  outputDirectory $p2 shared
+  option keepOutputsWritable
+  semaphore $s0 4 1
+  enableTempDirectory true
+```
+
+The config uses UTF-8, full-line `#` comments and the text format's bare tokens
+and quoted literals. Supported quoted escapes are `\\`, `\"`, `\n`, `\r`, `\t`;
+use literal UTF-8 rather than Unicode escape sequences. NUL, malformed tokens,
+unknown records/fields and invalid references are errors, with config record
+locations. Table records precede the single optional `process` section.
+Paths are normalized against Kati's evaluation directory. Supplied IDs are
+dense and stable, including repeated values. Kati emits all supplied tables
+itself and independently starts generated path/string/set IDs after each prefix;
+IDs never reference another fragment's tables.
+
+Initial process additions are `input`, `orderOnly` (path references or sets),
+`inputDirectory` (path and optional producer, including `project/operation`),
+`outputDirectory` (path and optional `shared`/`exclusive`, default shared),
+`option`, `semaphore` (string name, positive decimal limit/increment),
+`tempDirectory` (path) and `enableTempDirectory` (`true`/`false`). They apply to
+every process, **not** generated-script `writeFile` records. Kati owns executable,
+arguments, file outputs and rewrites. Raw `environment`/`passthroughEnvironment`
+process additions and all other fields are rejected.
+
+Duplicate output-directory roots, semaphore names, options or singleton temp
+settings are errors. Enabled automatic and explicit temp settings conflict.
+Multiple actions cannot share an explicit temp or exclusive output directory;
+use native automatic per-process temp and shared writable roots instead.
+Additional prerequisites cannot name any output (including lowered scripts) of
+this fragment, even a later one, or files under its uniform writable roots.
+Input directories cannot overlap those writable roots. Such roots do not merge
+writers or publish an SDK view: consumed generated products still need explicit
+file edges or producer-qualified directory dependencies/compositions.
+
+An earlier ordinary `graphFiles` fragment can construct an input seal referenced
+by the config's `inputDirectory`; a dependency directory can be selected by its
+producer. Trailing ordinary policy fragments can construct seals/compositions
+and exports from actual outputs. No phase defaults or membership scans occur.
+
 ## Reproducing the two-project BuildXL integration fixture
 
 From this checkout on Linux, generate into a **new** isolated directory:
@@ -173,3 +231,11 @@ should produce `consumer/consumer.out` containing
 `#define GENERATED_VALUE 37\ndirectgraph-input\n`.
 Metadata paths and Makefiles are relative; fragments use absolute evaluation
 paths, so regenerate rather than copying fragments to another root.
+
+Add `--configured` to exercise shared config prefixes, automatic temp, a mutex,
+shared private side-output roots, an earlier local source-seal fragment and a
+producer-qualified `tools/hostUsr` directory input. Prepend the emitted
+`producer-inputs.dg`/`consumer-inputs.dg` to the respective `graphFiles`.
+The optional BuildXL regression detects and loads these earlier fragments.
+This fixture still runs Kati outside BuildXL; it does not claim pregraph-pip
+tracking or real product compatibility validation.

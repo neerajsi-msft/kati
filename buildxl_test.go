@@ -45,6 +45,7 @@ type dgOperation struct {
 	OrderOnlyInputs  []dgRef
 	OrderOnlySets    []string
 	OutputFiles      []string
+	ProcessFields    map[string][][]string
 }
 
 type dgFragment struct {
@@ -156,6 +157,7 @@ func dgParse(t *testing.T, data []byte) dgFragment {
 				}
 				g.Operations = append(g.Operations, dgOperation{
 					Name: name, Kind: fields[0].value, Environment: map[string]string{},
+					ProcessFields: map[string][][]string{},
 				})
 				op = &g.Operations[len(g.Operations)-1]
 			default:
@@ -167,9 +169,18 @@ func dgParse(t *testing.T, data []byte) dgFragment {
 			t.Fatalf("invalid field at line %d: %s", number+2, line)
 		}
 		field, value := fields[0].value, resolve(fields[1])
-		if field != "option" && !(fields[1].bare && strings.HasPrefix(fields[1].value, "$")) &&
+		if field != "option" && field != "enableTempDirectory" && !(fields[1].bare && strings.HasPrefix(fields[1].value, "$")) &&
 			!((field == "input" || field == "orderOnly") && fields[1].bare && strings.HasPrefix(fields[1].value, "@")) {
 			t.Fatalf("field requires interned value: %s", line)
+		}
+		switch field {
+		case "inputDirectory", "outputDirectory", "tempDirectory", "enableTempDirectory", "semaphore":
+			values := []string{}
+			for _, token := range fields[1:] {
+				values = append(values, resolve(token))
+			}
+			op.ProcessFields[field] = append(op.ProcessFields[field], values)
+			continue
 		}
 		if field == "environment" {
 			if len(fields) != 3 {
@@ -253,6 +264,108 @@ func dgParse(t *testing.T, data []byte) dgFragment {
 		classify(g.Operations[i].OrderOnlyInputs)
 	}
 	return g
+}
+
+func TestBuildXLConfigPrefixesAndProcessFields(t *testing.T) {
+	dir := dgDir(t)
+	dgWrite(t, dir, "Makefile", "all: one two\none: common\n\t@echo one > $@\ntwo: common\n\t@echo two > $@\n")
+	dgWrite(t, dir, "common", "common")
+	dgWrite(t, dir, "extra", "extra")
+	dgWrite(t, dir, "config", `buildxlConfig 1
+path 0 "extra"
+path 1 "include"
+path 2 "side"
+path 3 "extra"
+string 0 "slots"
+string 1 "slots"
+set 0 $p0 $p3
+process
+  input @0
+  orderOnly $p0
+  inputDirectory $p1 "provider/seal"
+  outputDirectory $p2 shared
+  option keepOutputsWritable
+  semaphore $s0 2 1
+  enableTempDirectory true
+`)
+	g, data := dgGenerate(t, dir, "--buildxl_config=config")
+	if g.Paths["0"] != filepath.Join(dir, "extra") || g.Paths["3"] != g.Paths["0"] ||
+		g.Strings["0"] != "slots" || g.Strings["1"] != "slots" {
+		t.Fatal("supplied IDs or duplicate prefix entries changed")
+	}
+	if len(g.Paths) <= 4 || len(g.Strings) <= 2 || len(g.DependencySets) != 2 {
+		t.Fatal("generated tables did not extend independent prefixes")
+	}
+	if len(g.Operations) != 2 || !strings.Contains(string(data), "input @1") {
+		t.Fatal("generated dependency set did not follow supplied set prefix")
+	}
+	for _, op := range g.Operations {
+		if !reflect.DeepEqual(op.ProcessFields["inputDirectory"], [][]string{{filepath.Join(dir, "include"), "provider/seal"}}) ||
+			!reflect.DeepEqual(op.ProcessFields["semaphore"], [][]string{{"slots", "2", "1"}}) ||
+			!reflect.DeepEqual(op.ProcessFields["enableTempDirectory"], [][]string{{"true"}}) ||
+			len(g.inputs(t, op, false)) != 3 {
+			t.Fatalf("process additions missing: %+v", op)
+		}
+	}
+}
+
+func TestBuildXLConfigDoesNotAmendGeneratedScripts(t *testing.T) {
+	dir := dgDir(t)
+	dgWrite(t, dir, "Makefile", "out:\n\t@"+strings.Repeat("true; ", 20000)+"echo done > $@\n")
+	dgWrite(t, dir, "config", "buildxlConfig 1\nprocess\n  enableTempDirectory true\n")
+	g, _ := dgGenerate(t, dir, "--buildxl_config=config")
+	scripts := 0
+	for _, op := range g.Operations {
+		if op.Kind == "writeFile" {
+			scripts++
+			if len(op.ProcessFields) != 0 {
+				t.Fatal("process additions leaked into writeFile")
+			}
+		} else if len(op.ProcessFields["enableTempDirectory"]) != 1 {
+			t.Fatal("process additions missing")
+		}
+	}
+	if scripts == 0 {
+		t.Fatal("test did not exercise script lowering")
+	}
+}
+
+func TestBuildXLConfigRejectsInvalidFieldsAndDependencies(t *testing.T) {
+	for _, tc := range []struct{ name, config, want string }{
+		{"owned-output", "  output $p0\n", "unsupported process field"},
+		{"environment", "  environment $s0 $s0\n", "unsupported process field"},
+		{"raw-passthrough", "  passthroughEnvironment $s0\n", "unsupported process field"},
+		{"unknown", "  bogus true\n", "unsupported process field"},
+		{"self", "  input $p0\n", "self/forward reference"},
+		{"forward", "  orderOnly $p1\n", "self/forward reference"},
+		{"own-directory", "  inputDirectory $p2\n  outputDirectory $p2 shared\n", "own writable root"},
+		{"own-directory-file", "  input $p3\n  outputDirectory $p2 shared\n", "own writable root"},
+		{"temp-conflict", "  tempDirectory $p2\n  enableTempDirectory true\n", "temp setting"},
+		{"temp-sharing", "  tempDirectory $p2\n", "multiple emitted processes"},
+		{"exclusive-sharing", "  outputDirectory $p2 exclusive\n", "multiple emitted processes"},
+		{"semaphore", "  semaphore $s0 1 2\n", "invalid/duplicate semaphore"},
+		{"option", "  option noSuchOption\n", "unknown/duplicate process option"},
+		{"set", "  input @1\n", "undefined dependency set"},
+		{"path-id", "  input $p4\n", "undefined table reference"},
+		{"singleton", "  enableTempDirectory false\n  enableTempDirectory true\n", "temp setting"},
+		{"arity", "  semaphore $s0 1\n", "invalid arity"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := dgDir(t)
+			dgWrite(t, dir, "Makefile", "all: first second\nfirst:\n\t@echo first > $@\nsecond:\n\t@echo second > $@\n")
+			dgWrite(t, dir, "config", "buildxlConfig 1\npath 0 \"first\"\npath 1 \"second\"\npath 2 \"side\"\npath 3 \"side/input\"\nstring 0 \"slots\"\nprocess\n"+tc.config)
+			binary, _ := filepath.Abs("ckati")
+			cmd := exec.Command(binary, "--buildxl=fragment.dg", "--buildxl_config=config")
+			cmd.Dir = dir
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), tc.want) {
+				t.Fatalf("expected %q: %v\n%s", tc.want, err, output)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "fragment.dg")); !os.IsNotExist(err) {
+				t.Fatal("invalid config published a fragment")
+			}
+		})
+	}
 }
 
 func dgDir(t *testing.T) string {
@@ -885,6 +998,44 @@ func TestBuildXLFixtureGenerator(t *testing.T) {
 	}
 	if result, err := os.ReadFile(resultPath); err != nil || string(result) != expected {
 		t.Fatal("existing output was deleted or changed")
+	}
+}
+
+func TestBuildXLConfiguredCrossFragmentFixture(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 required")
+	}
+	dir := dgDir(t)
+	destination := filepath.Join(dir, "fixture")
+	script, _ := filepath.Abs("examples/buildxl/generate_fixture.py")
+	if output, err := exec.Command(python, script, "--configured", destination).CombinedOutput(); err != nil {
+		t.Fatalf("configured fixture: %v\n%s", err, output)
+	}
+	for _, project := range []string{"producer", "consumer"} {
+		fragment, err := os.ReadFile(filepath.Join(destination, project+".dg"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		g := dgParse(t, fragment)
+		if g.Paths["0"] != filepath.Join(destination, "policy-inputs") ||
+			g.Paths["1"] != "/usr" || g.Strings["0"] != "fixture-mutex" {
+			t.Fatal("configured IDs changed between fragments")
+		}
+		for _, op := range g.Operations {
+			if !reflect.DeepEqual(op.ProcessFields["inputDirectory"], [][]string{
+				{filepath.Join(destination, "policy-inputs"), "inputs"}, {"/usr", "tools/hostUsr"},
+			}) {
+				t.Fatalf("cross-fragment references not preserved: %+v", op.ProcessFields)
+			}
+		}
+		earlier, err := os.ReadFile(filepath.Join(destination, project+"-inputs.dg"))
+		if err != nil || !strings.Contains(string(earlier), "sealDirectory inputs\n") {
+			t.Fatalf("missing earlier input fragment: %v\n%s", err, earlier)
+		}
+		if err := dgExecute(t, g); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
