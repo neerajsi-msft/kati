@@ -213,9 +213,12 @@ still sees the full invocation environment. Ordinary names then receive Kati's
 existing scoped Make export/unexport overlay: explicit exports can introduce
 unselected names, unexports remove names, and a non-exported reassignment does
 not replace an inherited baseline value. Without a config, the legacy inherited
-baseline remains available. In both modes `TEMP`, `TMP`, `TMPDIR` are excluded
-from inheritance; explicitly selecting them is an error. Use native process
-temp construction rather than capturing the pregraph pip's temp paths.
+baseline remains available. In both modes native process temp construction owns
+`TEMP`, `TMP`, `TMPDIR`: these names are excluded from both the inherited baseline
+and Make export overlay, including target-scoped exports. Selecting them in either
+`inheritEnvironment` or `passthroughEnvironment` is an error. Make evaluation and
+values expanded into command text are unchanged; action temp bindings come only
+from native temp construction, not the pregraph pip's paths or Make exports.
 
 Top-level `passthroughEnvironment NAME...` metadata is authoritative for the
 selected names (for example `NJOBS`, `MAKE_PARALL`). Each name emits exactly one
@@ -223,9 +226,9 @@ process `passthroughEnvironment $sID`, in stable name order, even when absent,
 assigned, exported, unexported or target-scoped in Make. No tracked value or
 fallback is captured, and deferred export values need not be evaluated just to
 populate these fields. Ordinary export precedence remains unchanged for other
-names. Duplicate/invalid names are errors; overlapping inheritance selection is
-allowed but passthrough wins. This metadata is distinct from forbidden raw
-process environment rows.
+names. Duplicate/invalid names are errors, as is selecting a name in both
+`inheritEnvironment` and `passthroughEnvironment`. This metadata is distinct from
+forbidden raw process environment rows.
 
 Only runtime uses such as `$$NJOBS` remain late-bound. `$(NJOBS)` already expanded
 into command text remains captured and affects the action definition. Passthrough

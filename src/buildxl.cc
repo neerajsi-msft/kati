@@ -274,12 +274,12 @@ class BuildXLGenerator {
           ERROR_LOC(row.loc, "BuildXL config text requires valid UTF-8");
         }
       }
-      for (const auto* names :
-           {&config_.inherited_environment, &config_.passthrough_environment}) {
-        for (const auto& name : *names) {
-          if (!IsValidUtf8(name)) {
-            ERROR("BuildXL config environment names require valid UTF-8");
-          }
+    }
+    for (const auto* names :
+         {&config_.inherited_environment, &config_.passthrough_environment}) {
+      for (const auto& name : *names) {
+        if (!IsValidUtf8(name)) {
+          ERROR("BuildXL config environment names require valid UTF-8");
         }
       }
     }
@@ -405,11 +405,12 @@ class BuildXLGenerator {
     }
     ev_->set_current_scope(n.rule_vars);
     for (const auto& p : ev_->exports()) {
-      if (config_.passthrough_environment.count(std::string(p.first.str()))) {
+      const std::string_view name = p.first.str();
+      if (BuildXLConfig::IsTempName(name) ||
+          config_.passthrough_environment.count(name)) {
         continue;
       }
       if (p.second) {
-        const std::string_view name = p.first.str();
         std::string value = ev_->EvalVar(p.first);
         if (name.empty() || name.find('=') != std::string::npos ||
             value.find('\0') != std::string::npos) {
@@ -417,7 +418,7 @@ class BuildXLGenerator {
         }
         env[name] = *environment_values_.insert(std::move(value)).first;
       } else {
-        env.erase(p.first.str());
+        env.erase(name);
       }
     }
     ev_->set_current_scope(nullptr);

@@ -38,8 +38,8 @@ class BuildXLConfig {
   std::vector<std::string> strings;
   std::vector<std::vector<size_t>> sets;
   std::vector<Row> process;
-  std::set<std::string> inherited_environment;
-  std::set<std::string> passthrough_environment;
+  std::set<std::string, std::less<>> inherited_environment;
+  std::set<std::string, std::less<>> passthrough_environment;
 
   static bool IsTempName(std::string_view name) {
     return name == "TEMP" || name == "TMP" || name == "TMPDIR";
@@ -116,8 +116,19 @@ class BuildXLConfig {
               !names.insert(name).second) {
             ERROR_LOC(loc, "BuildXL config invalid/duplicate environment name");
           }
-          if (kind == "inheritEnvironment" && IsTempName(name)) {
-            ERROR_LOC(loc, "BuildXL config cannot inherit TEMP/TMP/TMPDIR");
+          if (IsTempName(name)) {
+            ERROR_LOC(loc,
+                      "BuildXL config cannot select TEMP/TMP/TMPDIR for action "
+                      "environment");
+          }
+          const auto& other = kind == "inheritEnvironment"
+                                  ? passthrough_environment
+                                  : inherited_environment;
+          if (other.count(name)) {
+            ERROR_LOC(loc,
+                      "BuildXL config environment name '%s' appears in both "
+                      "inheritEnvironment and passthroughEnvironment",
+                      name.c_str());
           }
         }
       } else {

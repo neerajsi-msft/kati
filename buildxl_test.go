@@ -484,7 +484,7 @@ func TestBuildXLConfiguredPassthroughIsAuthoritative(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			dgWrite(t, dir, "config", "buildxlConfig 1\ninheritEnvironment NJOBS MAKE_PARALL\npassthroughEnvironment NJOBS MAKE_PARALL\n")
+			dgWrite(t, dir, "config", "buildxlConfig 1\npassthroughEnvironment NJOBS MAKE_PARALL\n")
 			dgWrite(t, dir, "Makefile", tc.make+"out:\n\t@printf '%s\\n' \"$${NJOBS-unset}\" \"$${MAKE_PARALL-unset}\" > $@\n")
 			g, absent := dgGenerate(t, dir, "--buildxl_config=config")
 			op := dgProcess(t, g, "out")
@@ -514,9 +514,10 @@ func TestBuildXLConfiguredPassthroughIsAuthoritative(t *testing.T) {
 	}
 }
 
-func TestBuildXLConfigRejectsInheritedTempAndInvalidEnvironmentNames(t *testing.T) {
+func TestBuildXLConfigRejectsSelectedTempAndInvalidEnvironmentNames(t *testing.T) {
 	for _, row := range []string{
 		"inheritEnvironment TEMP", "inheritEnvironment TMP", "inheritEnvironment TMPDIR",
+		"passthroughEnvironment TEMP", "passthroughEnvironment TMP", "passthroughEnvironment TMPDIR",
 		"inheritEnvironment BAD=VALUE", "passthroughEnvironment \"\"", "passthroughEnvironment NJOBS NJOBS",
 	} {
 		t.Run(row, func(t *testing.T) {
@@ -529,6 +530,91 @@ func TestBuildXLConfigRejectsInheritedTempAndInvalidEnvironmentNames(t *testing.
 			output, err := cmd.CombinedOutput()
 			if err == nil || !strings.Contains(string(output), "config:2:") {
 				t.Fatalf("expected config diagnostic: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
+func TestBuildXLConfigRejectsConflictingEnvironmentSelectors(t *testing.T) {
+	for _, inheritFirst := range []bool{false, true} {
+		t.Run(strconv.FormatBool(inheritFirst), func(t *testing.T) {
+			dir := dgDir(t)
+			first, second := "passthroughEnvironment NJOBS", "inheritEnvironment NJOBS"
+			if inheritFirst {
+				first, second = second, first
+			}
+			dgWrite(t, dir, "Makefile", "out:\n\t@touch $@\n")
+			dgWrite(t, dir, "config", "buildxlConfig 1\n"+first+"\n"+second+"\n")
+			binary, _ := filepath.Abs("ckati")
+			cmd := exec.Command(binary, "--buildxl=fragment.dg", "--buildxl_config=config")
+			cmd.Dir = dir
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "config:3:") ||
+				!strings.Contains(string(output), "'NJOBS' appears in both") {
+				t.Fatalf("expected conflicting selectors at load: %v\n%s", err, output)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "fragment.dg")); !os.IsNotExist(err) {
+				t.Fatal("conflicting selectors published a fragment")
+			}
+		})
+	}
+}
+
+func TestBuildXLTempExportsCannotOverrideNativeTempOwnership(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		t.Run(strconv.FormatBool(configured), func(t *testing.T) {
+			dir := dgDir(t)
+			for _, name := range []string{"TEMP", "TMP", "TMPDIR"} {
+				t.Setenv(name, filepath.Join(dir, "invocation-temp"))
+			}
+			dgWrite(t, dir, "Makefile", `export TEMP = make-global
+TMP = $(shell touch forbidden)
+export TMP
+export TMPDIR = make-temp
+all: one two
+one: TEMP = make-scoped
+one two:
+	@printf '%s' '$(TEMP)' > $@
+`)
+			var args []string
+			if configured {
+				dgWrite(t, dir, "config", "buildxlConfig 1\nprocess\n  enableTempDirectory true\n")
+				args = []string{"--buildxl_config=config"}
+			}
+			g, _ := dgGenerate(t, dir, args...)
+			for _, op := range g.Operations {
+				for _, name := range []string{"TEMP", "TMP", "TMPDIR"} {
+					if _, exists := op.Environment[name]; exists {
+						t.Fatalf("Make temp export leaked into action environment: %+v", op.Environment)
+					}
+				}
+				value := "make-global"
+				if op.OutputFiles[0] == filepath.Join(dir, "one") {
+					value = "make-scoped"
+				}
+				if !strings.Contains(strings.Join(op.Arguments, " "), value) {
+					t.Fatal("filtering temp exports changed Make command expansion")
+				}
+			}
+			if _, err := os.Stat(filepath.Join(dir, "forbidden")); !os.IsNotExist(err) {
+				t.Fatal("exporter evaluated a deferred temp export")
+			}
+		})
+	}
+}
+
+func TestBuildXLConfigValidatesEnvironmentNamesWithoutProcessAdditions(t *testing.T) {
+	for _, selector := range []string{"inheritEnvironment", "passthroughEnvironment"} {
+		t.Run(selector, func(t *testing.T) {
+			dir := dgDir(t)
+			dgWrite(t, dir, "Makefile", "all:\n")
+			dgWrite(t, dir, "config", "buildxlConfig 1\n"+selector+" \"invalid\xff\"\n")
+			binary, _ := filepath.Abs("ckati")
+			cmd := exec.Command(binary, "--buildxl=fragment.dg", "--buildxl_config=config")
+			cmd.Dir = dir
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "environment names require valid UTF-8") {
+				t.Fatalf("expected metadata validation without process additions: %v\n%s", err, output)
 			}
 		})
 	}
