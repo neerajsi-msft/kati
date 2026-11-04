@@ -245,8 +245,13 @@ class BuildXLGenerator {
         base_environment_(BaseEnvironment()) {}
 
   void Generate(const std::vector<NamedDepNode>& roots) {
-    config_.Load(g_flags.buildxl_config,
-                 [&](std::string_view value) { return Path(value); });
+    config_.Load(g_flags.buildxl_config, [&](std::string_view value) {
+      std::filesystem::path path(Path(value));
+      if (path != path.root_path() && path.filename().empty()) {
+        path = path.parent_path();
+      }
+      return path.string();
+    });
     if (g_flags.buildxl_config) {
       sources_.emplace(Path(g_flags.buildxl_config), Loc());
     }
@@ -267,6 +272,14 @@ class BuildXLGenerator {
       for (const auto& token : row.tokens) {
         if (!IsValidUtf8(token.value)) {
           ERROR_LOC(row.loc, "BuildXL config text requires valid UTF-8");
+        }
+      }
+      for (const auto* names :
+           {&config_.inherited_environment, &config_.passthrough_environment}) {
+        for (const auto& name : *names) {
+          if (!IsValidUtf8(name)) {
+            ERROR("BuildXL config environment names require valid UTF-8");
+          }
         }
       }
     }
@@ -381,10 +394,20 @@ class BuildXLGenerator {
   }
 
   std::map<std::string_view, std::string_view> Environment(const DepNode& n) {
-    std::map<std::string_view, std::string_view> env(base_environment_.begin(),
-                                                     base_environment_.end());
+    std::map<std::string_view, std::string_view> env;
+    for (const auto& p : base_environment_) {
+      if (!BuildXLConfig::IsTempName(p.first) &&
+          (!g_flags.buildxl_config ||
+           config_.inherited_environment.count(p.first)) &&
+          !config_.passthrough_environment.count(p.first)) {
+        env.emplace(p.first, p.second);
+      }
+    }
     ev_->set_current_scope(n.rule_vars);
     for (const auto& p : ev_->exports()) {
+      if (config_.passthrough_environment.count(std::string(p.first.str()))) {
+        continue;
+      }
       if (p.second) {
         const std::string_view name = p.first.str();
         std::string value = ev_->EvalVar(p.first);
@@ -718,6 +741,9 @@ class BuildXLGenerator {
       str(p.first);
       str(p.second);
     }
+    for (const auto& name : config_.passthrough_environment) {
+      str(name);
+    }
     for (const auto& script : a.scripts) {
       path(script.path);
       for (std::string_view part : StringParts(script.content)) {
@@ -744,6 +770,9 @@ class BuildXLGenerator {
       out << ' ';
       Value(out, p.second, false);
       out << '\n';
+    }
+    for (const auto& name : config_.passthrough_environment) {
+      Field(out, "passthroughEnvironment", name, false);
     }
     if (!config_.HasOption("dependsOnCurrentOs") &&
         !config_.HasOption("dependsOnCurrentHostOsDirectories")) {

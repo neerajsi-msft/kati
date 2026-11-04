@@ -46,7 +46,7 @@ Operations are topologically ordered `process` or `writeFile` records.
 Processes use Kati's shell (`SHELL` must start with an absolute executable path;
 literal options, quoting and escaping are supported, but shell expansions and
 operators are rejected), literal
-arguments, an explicit evaluation-environment snapshot plus scoped exports,
+arguments, an inherited action-environment baseline plus scoped exports,
 declared file inputs/outputs, and `dependsOnCurrentOs`. Process fields are
 `executable`, `workingDirectory`, repeated `argument`, repeated
 `environment NAME VALUE`, repeated `option`, repeated `input`, repeated
@@ -104,9 +104,10 @@ already exist.
 
 Bounded limitations:
 
-* Only declared file artifacts are modeled. Recipes must declare all reads and
-  writes through prerequisites and outputs; hidden shell IO, recursive builds,
-  directory artifacts and external side effects are not inferred. Existing
+* Make extraction models declared file artifacts. Explicit directory grants and
+  private writable roots can be supplied through the config below; hidden shell
+  IO, recursive builds, directory membership and external side effects are not
+  inferred. Consumed/published products still need actual declared producers. Existing
   symlink components in artifact paths are rejected (shell executables may
   be symlinks). Absolute paths are lexical-normalized against the evaluation cwd;
   relocation/source-root sealing is not provided by Kati.
@@ -163,6 +164,8 @@ path 1 "/dependency/include"
 path 2 "/project/private-side-outputs"
 string 0 "compiler-slots"
 set 0 $p0
+inheritEnvironment PATH HOME LC_ALL
+passthroughEnvironment NJOBS MAKE_PARALL
 process
   input @0
   inputDirectory $p1 "dependency/headers"
@@ -200,6 +203,31 @@ this fragment, even a later one, or files under its uniform writable roots.
 Input directories cannot overlap those writable roots. Such roots do not merge
 writers or publish an SDK view: consumed generated products still need explicit
 file edges or producer-qualified directory dependencies/compositions.
+
+With a config, the inherited action baseline contains only names selected by
+top-level `inheritEnvironment NAME...` records (none by default). These select
+names, never values; missing inherited names remain absent. Make evaluation
+still sees the full invocation environment. Ordinary names then receive Kati's
+existing scoped Make export/unexport overlay: explicit exports can introduce
+unselected names, unexports remove names, and a non-exported reassignment does
+not replace an inherited baseline value. Without a config, the legacy inherited
+baseline remains available. In both modes `TEMP`, `TMP`, `TMPDIR` are excluded
+from inheritance; explicitly selecting them is an error. Use native process
+temp construction rather than capturing the pregraph pip's temp paths.
+
+Top-level `passthroughEnvironment NAME...` metadata is authoritative for the
+selected names (for example `NJOBS`, `MAKE_PARALL`). Each name emits exactly one
+process `passthroughEnvironment $sID`, in stable name order, even when absent,
+assigned, exported, unexported or target-scoped in Make. No tracked value or
+fallback is captured, and deferred export values need not be evaluated just to
+populate these fields. Ordinary export precedence remains unchanged for other
+names. Duplicate/invalid names are errors; overlapping inheritance selection is
+allowed but passthrough wins. This metadata is distinct from forbidden raw
+process environment rows.
+
+Only runtime uses such as `$$NJOBS` remain late-bound. `$(NJOBS)` already expanded
+into command text remains captured and affects the action definition. Passthrough
+does not change pregraph evaluation tracking or recompute derived `MAKE_PARALL`.
 
 An earlier ordinary `graphFiles` fragment can construct an input seal referenced
 by the config's `inputDirectory`; a dependency directory can be selected by its

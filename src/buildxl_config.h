@@ -38,6 +38,12 @@ class BuildXLConfig {
   std::vector<std::string> strings;
   std::vector<std::vector<size_t>> sets;
   std::vector<Row> process;
+  std::set<std::string> inherited_environment;
+  std::set<std::string> passthrough_environment;
+
+  static bool IsTempName(std::string_view name) {
+    return name == "TEMP" || name == "TMP" || name == "TMPDIR";
+  }
 
   void Load(const char* filename,
             const std::function<std::string(std::string_view)>& normalize) {
@@ -99,6 +105,21 @@ class BuildXLConfig {
           members.push_back(Reference(tokens[i], 'p', loc));
         }
         sets.push_back(std::move(members));
+      } else if (!in_process && (kind == "inheritEnvironment" ||
+                                 kind == "passthroughEnvironment")) {
+        auto& names = kind == "inheritEnvironment" ? inherited_environment
+                                                   : passthrough_environment;
+        for (size_t i = 1; i < tokens.size(); ++i) {
+          const auto& name = tokens[i].value;
+          if (name.empty() || name.find('=') != std::string::npos ||
+              name.find_first_of("$@\n\r\t ") != std::string::npos ||
+              !names.insert(name).second) {
+            ERROR_LOC(loc, "BuildXL config invalid/duplicate environment name");
+          }
+          if (kind == "inheritEnvironment" && IsTempName(name)) {
+            ERROR_LOC(loc, "BuildXL config cannot inherit TEMP/TMP/TMPDIR");
+          }
+        }
       } else {
         ERROR_LOC(loc, "BuildXL config unsupported record: %s", kind.c_str());
       }

@@ -69,7 +69,9 @@ def main():
             + "".join(f"path {i} {json.dumps(str(path))}\n" for i, path in enumerate([
                 inputs, Path("/usr"), inputs / "extra", destination / "private-side",
             ]))
-            + 'string 0 "fixture-mutex"\nset 0 $p2\nprocess\n'
+            + 'string 0 "fixture-mutex"\nset 0 $p2\n'
+            + 'inheritEnvironment PATH HOME LC_ALL\n'
+            + 'passthroughEnvironment NJOBS MAKE_PARALL\nprocess\n'
             + '  input @0\n  inputDirectory $p0 inputs\n'
             + '  inputDirectory $p1 "tools/hostUsr"\n'
             + '  outputDirectory $p3 shared\n  semaphore $s0 1 1\n'
@@ -86,6 +88,12 @@ def main():
                 encoding="utf-8",
             )
     for project, makefile in makefiles.items():
+        if args.configured:
+            makefile = makefile.replace(
+                "\t",
+                '\t@test -n "$$TMPDIR"; printf private > "$$TMPDIR/private"\n\t',
+                1,
+            )
         directory = destination / project
         directory.mkdir()
         (directory / "Makefile").write_bytes(makefile.encode("utf-8"))

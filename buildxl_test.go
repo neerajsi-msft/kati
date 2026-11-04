@@ -31,21 +31,22 @@ type dgRef struct {
 }
 
 type dgOperation struct {
-	Name             string
-	Kind             string
-	Destination      string
-	Content          string
-	Executable       string
-	WorkingDirectory string
-	Arguments        []string
-	Environment      map[string]string
-	Options          []string
-	InputFiles       []dgRef
-	InputSets        []string
-	OrderOnlyInputs  []dgRef
-	OrderOnlySets    []string
-	OutputFiles      []string
-	ProcessFields    map[string][][]string
+	Name                   string
+	Kind                   string
+	Destination            string
+	Content                string
+	Executable             string
+	WorkingDirectory       string
+	Arguments              []string
+	Environment            map[string]string
+	Options                []string
+	InputFiles             []dgRef
+	InputSets              []string
+	OrderOnlyInputs        []dgRef
+	OrderOnlySets          []string
+	OutputFiles            []string
+	ProcessFields          map[string][][]string
+	PassthroughEnvironment []string
 }
 
 type dgFragment struct {
@@ -215,6 +216,8 @@ func dgParse(t *testing.T, data []byte) dgFragment {
 			g.Root = value
 		case "option":
 			op.Options = append(op.Options, value)
+		case "passthroughEnvironment":
+			op.PassthroughEnvironment = append(op.PassthroughEnvironment, value)
 		case "destination":
 			op.Destination = value
 		case "output":
@@ -273,7 +276,7 @@ func TestBuildXLConfigPrefixesAndProcessFields(t *testing.T) {
 	dgWrite(t, dir, "extra", "extra")
 	dgWrite(t, dir, "config", `buildxlConfig 1
 path 0 "extra"
-path 1 "include"
+path 1 "include \"quoted\" café"
 path 2 "side"
 path 3 "extra"
 string 0 "slots"
@@ -300,7 +303,7 @@ process
 		t.Fatal("generated dependency set did not follow supplied set prefix")
 	}
 	for _, op := range g.Operations {
-		if !reflect.DeepEqual(op.ProcessFields["inputDirectory"], [][]string{{filepath.Join(dir, "include"), "provider/seal"}}) ||
+		if !reflect.DeepEqual(op.ProcessFields["inputDirectory"], [][]string{{filepath.Join(dir, "include \"quoted\" café"), "provider/seal"}}) ||
 			!reflect.DeepEqual(op.ProcessFields["semaphore"], [][]string{{"slots", "2", "1"}}) ||
 			!reflect.DeepEqual(op.ProcessFields["enableTempDirectory"], [][]string{{"true"}}) ||
 			len(g.inputs(t, op, false)) != 3 {
@@ -339,6 +342,8 @@ func TestBuildXLConfigRejectsInvalidFieldsAndDependencies(t *testing.T) {
 		{"self", "  input $p0\n", "self/forward reference"},
 		{"forward", "  orderOnly $p1\n", "self/forward reference"},
 		{"own-directory", "  inputDirectory $p2\n  outputDirectory $p2 shared\n", "own writable root"},
+		{"own-directory-alias", "  inputDirectory $p4\n  outputDirectory $p2 shared\n", "own writable root"},
+		{"duplicate-directory-alias", "  outputDirectory $p2 shared\n  outputDirectory $p4 shared\n", "duplicate outputDirectory"},
 		{"own-directory-file", "  input $p3\n  outputDirectory $p2 shared\n", "own writable root"},
 		{"temp-conflict", "  tempDirectory $p2\n  enableTempDirectory true\n", "temp setting"},
 		{"temp-sharing", "  tempDirectory $p2\n", "multiple emitted processes"},
@@ -346,14 +351,14 @@ func TestBuildXLConfigRejectsInvalidFieldsAndDependencies(t *testing.T) {
 		{"semaphore", "  semaphore $s0 1 2\n", "invalid/duplicate semaphore"},
 		{"option", "  option noSuchOption\n", "unknown/duplicate process option"},
 		{"set", "  input @1\n", "undefined dependency set"},
-		{"path-id", "  input $p4\n", "undefined table reference"},
+		{"path-id", "  input $p5\n", "undefined table reference"},
 		{"singleton", "  enableTempDirectory false\n  enableTempDirectory true\n", "temp setting"},
 		{"arity", "  semaphore $s0 1\n", "invalid arity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := dgDir(t)
 			dgWrite(t, dir, "Makefile", "all: first second\nfirst:\n\t@echo first > $@\nsecond:\n\t@echo second > $@\n")
-			dgWrite(t, dir, "config", "buildxlConfig 1\npath 0 \"first\"\npath 1 \"second\"\npath 2 \"side\"\npath 3 \"side/input\"\nstring 0 \"slots\"\nprocess\n"+tc.config)
+			dgWrite(t, dir, "config", "buildxlConfig 1\npath 0 \"first\"\npath 1 \"second\"\npath 2 \"side\"\npath 3 \"side/input\"\npath 4 \"side/\"\nstring 0 \"slots\"\nprocess\n"+tc.config)
 			binary, _ := filepath.Abs("ckati")
 			cmd := exec.Command(binary, "--buildxl=fragment.dg", "--buildxl_config=config")
 			cmd.Dir = dir
@@ -363,6 +368,141 @@ func TestBuildXLConfigRejectsInvalidFieldsAndDependencies(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(dir, "fragment.dg")); !os.IsNotExist(err) {
 				t.Fatal("invalid config published a fragment")
+			}
+		})
+	}
+}
+
+func TestBuildXLConfigRejectsMalformedPrefixes(t *testing.T) {
+	for _, config := range []string{
+		"buildxlConfig 2\n",
+		"buildxlConfig 1\npath 1 \"gap\"\n",
+		"buildxlConfig 1\nset 0 $p0\n",
+		"buildxlConfig 1\nstring 0 \"name\"\nset 0 $s0\n",
+		"buildxlConfig 1\nstring 0 \"unterminated\n",
+		"buildxlConfig 1\nstring 0 \"bad\\u0041\"\n",
+		"buildxlConfig 1\nstring 0 \"\xff\"\n",
+	} {
+		t.Run(strconv.Quote(config), func(t *testing.T) {
+			dir := dgDir(t)
+			dgWrite(t, dir, "Makefile", "out:\n\t@touch $@\n")
+			dgWrite(t, dir, "config", config)
+			binary, _ := filepath.Abs("ckati")
+			cmd := exec.Command(binary, "--buildxl=fragment.dg", "--buildxl_config=config")
+			cmd.Dir = dir
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "BuildXL config") {
+				t.Fatalf("expected config rejection: %v\n%s", err, output)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "fragment.dg")); !os.IsNotExist(err) {
+				t.Fatal("invalid prefix published a fragment")
+			}
+		})
+	}
+}
+
+func TestBuildXLConfiguredEnvironmentSelectionAndMakeOverlay(t *testing.T) {
+	dir := dgDir(t)
+	t.Setenv("DG_BASE", "inherited")
+	t.Setenv("DG_REMOVED", "remove")
+	t.Setenv("DG_EVALUATION_ONLY", "evaluation-one")
+	t.Setenv("TMPDIR", "/pregraph/private-temp")
+	dgWrite(t, dir, "config", "buildxlConfig 1\ninheritEnvironment DG_BASE DG_REMOVED DG_MISSING\n")
+	dgWrite(t, dir, "Makefile", `$(if $(DG_EVALUATION_ONLY),,$(error evaluation environment was filtered))
+DG_BASE := reassigned
+unexport DG_REMOVED
+export DG_OUTSIDE = outside
+export DG_SCOPE = global
+all: one two
+one: DG_SCOPE = scoped
+one two:
+	@printf '%s\n' '$(DG_BASE)' > $@
+`)
+	g, first := dgGenerate(t, dir, "--buildxl_config=config")
+	for _, op := range g.Operations {
+		want := map[string]string{"DG_BASE": "inherited", "DG_OUTSIDE": "outside", "DG_SCOPE": "global"}
+		if op.OutputFiles[0] == filepath.Join(dir, "one") {
+			want["DG_SCOPE"] = "scoped"
+		}
+		if !reflect.DeepEqual(op.Environment, want) ||
+			!strings.Contains(strings.Join(op.Arguments, " "), "reassigned") {
+			t.Fatalf("selection/export overlay changed evaluation: %+v", op)
+		}
+	}
+	t.Setenv("DG_EVALUATION_ONLY", "evaluation-two")
+	_, second := dgGenerate(t, dir, "--buildxl_config=config")
+	if string(first) != string(second) {
+		t.Fatal("evaluation-only environment invalidated action definitions")
+	}
+	t.Setenv("DG_BASE", "changed-tracked-baseline")
+	_, tracked := dgGenerate(t, dir, "--buildxl_config=config")
+	if string(first) == string(tracked) {
+		t.Fatal("selected tracked environment must affect action definitions")
+	}
+}
+
+func TestBuildXLConfiguredPassthroughIsAuthoritative(t *testing.T) {
+	for _, tc := range []struct{ name, make string }{
+		{"missing", ""},
+		{"assigned", "NJOBS := assigned\nMAKE_PARALL := assigned\n"},
+		{"exported", "export NJOBS := exported\nexport MAKE_PARALL := exported\n"},
+		{"unexported", "unexport NJOBS MAKE_PARALL\n"},
+		{"scoped", "export NJOBS MAKE_PARALL\nout: NJOBS = scoped\nout: MAKE_PARALL = scoped\n"},
+		{"deferred", "NJOBS = $(shell touch forbidden)\nexport NJOBS\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := dgDir(t)
+			for _, name := range []string{"NJOBS", "MAKE_PARALL"} {
+				t.Setenv(name, "restore")
+				if err := os.Unsetenv(name); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dgWrite(t, dir, "config", "buildxlConfig 1\ninheritEnvironment NJOBS MAKE_PARALL\npassthroughEnvironment NJOBS MAKE_PARALL\n")
+			dgWrite(t, dir, "Makefile", tc.make+"out:\n\t@printf '%s\\n' \"$${NJOBS-unset}\" \"$${MAKE_PARALL-unset}\" > $@\n")
+			g, absent := dgGenerate(t, dir, "--buildxl_config=config")
+			op := dgProcess(t, g, "out")
+			if len(op.Environment) != 0 || !reflect.DeepEqual(op.PassthroughEnvironment, []string{"MAKE_PARALL", "NJOBS"}) {
+				t.Fatalf("passthrough captured a value or lost metadata: %+v", op)
+			}
+			t.Setenv("NJOBS", "13")
+			t.Setenv("MAKE_PARALL", "-j13")
+			_, present := dgGenerate(t, dir, "--buildxl_config=config")
+			if string(absent) != string(present) {
+				t.Fatal("passthrough values changed action definitions")
+			}
+			if _, err := os.Stat(filepath.Join(dir, "forbidden")); !os.IsNotExist(err) {
+				t.Fatal("exporter evaluated a configured passthrough value")
+			}
+		})
+	}
+	dir := dgDir(t)
+	dgWrite(t, dir, "config", "buildxlConfig 1\npassthroughEnvironment NJOBS\n")
+	dgWrite(t, dir, "Makefile", "out:\n\t@printf '%s' '$(NJOBS)' > $@\n")
+	t.Setenv("NJOBS", "4")
+	_, first := dgGenerate(t, dir, "--buildxl_config=config")
+	t.Setenv("NJOBS", "13")
+	_, second := dgGenerate(t, dir, "--buildxl_config=config")
+	if string(first) == string(second) {
+		t.Fatal("Make-expanded command text must remain captured")
+	}
+}
+
+func TestBuildXLConfigRejectsInheritedTempAndInvalidEnvironmentNames(t *testing.T) {
+	for _, row := range []string{
+		"inheritEnvironment TEMP", "inheritEnvironment TMP", "inheritEnvironment TMPDIR",
+		"inheritEnvironment BAD=VALUE", "passthroughEnvironment \"\"", "passthroughEnvironment NJOBS NJOBS",
+	} {
+		t.Run(row, func(t *testing.T) {
+			dir := dgDir(t)
+			dgWrite(t, dir, "Makefile", "out:\n\t@touch $@\n")
+			dgWrite(t, dir, "config", "buildxlConfig 1\n"+row+"\n")
+			binary, _ := filepath.Abs("ckati")
+			cmd := exec.Command(binary, "--buildxl=fragment.dg", "--buildxl_config=config")
+			cmd.Dir = dir
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "config:2:") {
+				t.Fatalf("expected config diagnostic: %v\n%s", err, output)
 			}
 		})
 	}
@@ -979,7 +1119,7 @@ func TestBuildXLFixtureGenerator(t *testing.T) {
 		for _, operation := range graph.Operations {
 			if !reflect.DeepEqual(operation.Environment, map[string]string{
 				"PATH": "/usr/bin:/bin", "HOME": destination,
-				"TMPDIR": filepath.Join(destination, "compiler-scratch"), "LC_ALL": "C",
+				"LC_ALL": "C",
 			}) {
 				t.Fatalf("fixture environment is not minimal: %+v", operation.Environment)
 			}
@@ -1033,8 +1173,12 @@ func TestBuildXLConfiguredCrossFragmentFixture(t *testing.T) {
 		if err != nil || !strings.Contains(string(earlier), "sealDirectory inputs\n") {
 			t.Fatalf("missing earlier input fragment: %v\n%s", err, earlier)
 		}
-		if err := dgExecute(t, g); err != nil {
-			t.Fatal(err)
+		for _, op := range g.Operations {
+			for _, output := range op.OutputFiles {
+				if _, err := os.Stat(output); !os.IsNotExist(err) {
+					t.Fatal("configured fixture generation executed a recipe")
+				}
+			}
 		}
 	}
 }
